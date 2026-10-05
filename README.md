@@ -1,72 +1,107 @@
-# Malware Family Classification from MalImg Images
+<div align="center">
 
-Machine Learning course assignment, Semester I 2026–2027. The three-person group plans to classify malware **families** from binary-derived grayscale images using pretrained visual features and traditional classifiers. The internal submission deadline is **30 November 2026**.
+# MalImg Family Classification
 
-**Status (5 October 2026):** this is the starter repository. The MalImg archive has been audited, but the instructor's dataset/subset approval, official split, pretrained features, model results and final Colab `Run all` verification are pending. No scores in this repository are presented as results.
+**A reproducible machine learning project for classifying malware families from binary-derived images.**<br>
+Pretrained visual features · Traditional classifiers · Leakage-aware evaluation
 
-## Decision and scope
+[![Project status](https://img.shields.io/badge/status-active%20development-2563eb?style=flat-square)](#project-status)
+[![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)](#getting-started)
+[![PyTorch planned](https://img.shields.io/badge/PyTorch-feature%20pipeline%20planned-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](#method)
+[![Quality checks](https://github.com/TuanKhai1210/malimg-family-classification/actions/workflows/quality.yml/badge.svg?branch=main)](https://github.com/TuanKhai1210/malimg-family-classification/actions/workflows/quality.yml)
 
-- Use the public MalImg archive. The audited copy contains 9,339 images in 25 families.
-- Exclude `Yuner.A` from the **main 24-class benchmark**: its 800 files have one unique decoded pixel image. The resulting planned set contains 8,539 files and 8,018 unique pixel groups.
-- Keep exact pixel duplicates within one train/validation/test partition. Target approximately 70/15/15 by file count, subject to group constraints. The split is **not yet created**.
-- Compare frozen ResNet50 + Logistic Regression (E2), frozen ResNet50 + Linear SVM (E3), and frozen ConvNeXt-Tiny + Linear SVM (E4). Feature files must be saved and reloaded before classifier fitting.
-- Select configurations on validation, then evaluate once on the locked test set. Primary planned metric: Macro-F1 using one deterministic representative of each exact pixel group in validation/test; also report file-level metrics.
-- Fine-tuning and GitHub presentation are extension/bonus work after the core pipeline is stable.
+[Overview](#overview) · [Getting started](#getting-started) · [Method](#method) · [Project status](#project-status) · [Contributing](CONTRIBUTING.md)
 
-This dataset does not support benign-versus-malicious detection. Any conclusion concerns known family labels under this benchmark and split.
+</div>
 
-The complete task breakdown, acceptance criteria and schedule are in [docs/project_plan.md](docs/project_plan.md). The [audit note](docs/data_audit.md) records verified counts and checksum. Requirements come from `MLAssignment_ELv2.pdf` supplied to the team; the instructor must confirm MalImg and the 24-class subset and verify that another group has not selected the same dataset.
+## Overview
 
-## Group roles
+This three-person Machine Learning course project studies **which malware family** an image belongs to. Each grayscale image is derived from the bytes of one malware sample. The planned core pipeline extracts features with pretrained image models, saves those features, and fits traditional classifiers on them. It does not perform benign-versus-malicious detection.
 
-| Role | Owner | Initial deliverable | Reviewer |
-|---|---|---|---|
-| A | Name pending | Dataset card, 24-class manifest, split v1, EDA, instructor/LMS check | C |
-| B | Name pending | Pretrained extraction, feature store, E2/E3/E4 | A |
-| C | Name pending | Shared metrics, experiment registry, Colab integration and clean `Run all` | B |
+| Project fact | Current plan |
+|---|---|
+| Course task | Task 3 — Machine Learning with Image Data |
+| Dataset | MalImg; audited archive: 9,339 images across 25 families |
+| Main benchmark | 24 families and 8,539 files after excluding `Yuner.A`, subject to instructor approval |
+| Core experiments | ResNet50 + Logistic Regression; ResNet50 + Linear SVM; ConvNeXt-Tiny + Linear SVM |
+| Primary evaluation | Macro-F1 on one deterministic representative per exact-pixel group in validation/test |
+| Team and deadline | 3 members; submission deadline provided by the team: **30 November 2026** |
 
-All three members write their report sections. Replace role placeholders after the first group meeting and record contribution percentages from actual work and instructor guidance.
+The [project plan](docs/project_plan.md) contains the task breakdown, owners A/B/C, schedule, deliverables, and acceptance criteria. The [data audit](docs/data_audit.md) explains the verified image counts and the decision to exclude `Yuner.A` from the main benchmark.
 
-## Repository map
+## Getting started
 
-```text
-configs/       Shared project settings; no local paths
-docs/          Team plan and dataset audit
-features/      Output directory for saved embeddings (ignored by Git)
-metadata/      Approved manifest, split and label map will live here
-modules/       Common contracts, feature I/O and evaluation helpers
-notebooks/     Main Colab front end
-reports/       Progress and final report sources/results
-results/       Generated experiment outputs (ignored by Git)
-scripts/       Download and dataset audit tools
-tests/         Small contract checks on synthetic examples
+Clone the repository and use Python 3.11:
+
+```bash
+git clone https://github.com/TuanKhai1210/malimg-family-classification.git
+cd malimg-family-classification
+python -m venv .venv
 ```
 
-`notebooks/main_colab.ipynb` currently checks repository structure and configuration. It is a **starter notebook**, not the final end-to-end assignment notebook. A/B/C will integrate public download, EDA, extraction, classifier comparison and final evaluation before claiming `Run all` compliance.
-
-## Data access and reproducibility
-
-The public archive URL is in `configs/project.json` and `scripts/download_malimg.py`. The audited archive is 1,174,609,734 bytes with SHA-256:
-
-```text
-9766ae9f1daa520e367fb486ca94728fe1485c0f5cb8314c312d77089a1fe9ec
-```
-
-After cloning, in a Python environment:
+Activate the environment with `.venv\Scripts\Activate.ps1` in Windows PowerShell or `source .venv/bin/activate` on macOS/Linux. Then run:
 
 ```bash
 python -m pip install -r requirements.txt
-python scripts/download_malimg.py
-python scripts/inspect_malimg.py data/MalImg_original_dataset.zip
 python -m unittest discover -s tests -v
 ```
 
-The download is about 1.17 GB. The audit command writes local `metadata/malimg_manifest.csv` and `metadata/malimg_summary.json`; these are generated evidence, **not** the approved 24-class split. Never treat arbitrary archive paths as trusted extraction destinations. Do not commit the raw archive, images, feature caches, credentials or private data. The dataset README asks users to cite its paper and says the dataset should not be redistributed; use the public source link rather than uploading a copy to GitHub.
+The tests use small synthetic examples and do not download MalImg or train a model.
 
-Citation: Nataraj et al., [*Malware Images: Visualization and Automatic Classification*](https://doi.org/10.1145/2016904.2016908), VizSec 2011.
+To reproduce the dataset inventory, download the public archive and verify its SHA-256 before inspecting it:
 
-## Course submission requirements
+```bash
+python scripts/download_malimg.py
+python scripts/inspect_malimg.py data/MalImg_original_dataset.zip
+```
 
-The final Colab notebook must run with `Runtime > Run all` from a clean runtime, install its dependencies, download/extract the dataset from a public link without mounting a personal drive, and use saved `.npy` or `.h5` features for downstream classification. The final ZIP must contain `notebooks/`, `modules/`, `reports/`, and `features/`; the report must include EDA, methods, real experiment results, analysis, task distribution and contribution percentages. The course uses its LMS for progress deadlines and the instructor's Drive folder for final submission.
+The archive is approximately **1.17 GB**. The audit writes local files under `metadata/`; those files are evidence for the original 25-class archive, not an approved train/validation/test split. The public URL and audited checksum are recorded in [`configs/project.json`](configs/project.json).
 
-Fill in before public final submission: course code, instructor, group name, member names, student IDs and emails, exact execution steps, and links to the report and Colab notebook.
+## Method
+
+The planned path is **image → preprocessing → frozen pretrained feature extractor → saved `.npy` features → traditional classifier → evaluation**. The feature matrix, labels, sample IDs, model weights, transforms, and manifest version must remain aligned and traceable.
+
+The source archive contains 800 `Yuner.A` files with one unique decoded pixel image. The main benchmark excludes this family so that exact-pixel duplicates cannot be placed across training and held-out partitions for that class. The remaining images will be split by family and exact-pixel group; all files in a group must stay in one partition. This policy does not rule out near-duplicates or prove independence between malware samples.
+
+The core comparison uses the same locked split and evaluation unit. Validation selects configurations; test is reserved for the final assessment. File-level metrics will be reported alongside the representative-per-group metrics so the effect of duplicate weighting remains visible. Fine-tuning is an optional extension after the core pipeline works.
+
+## Project status
+
+> **In progress — 5 October 2026.** The archive has been audited and the repository scaffold is available. Instructor approval of MalImg and the 24-class scope, the official split, pretrained features, model results, and clean Colab `Runtime > Run all` verification are still pending. No benchmark scores are claimed here.
+
+The current [`notebooks/main_colab.ipynb`](notebooks/main_colab.ipynb) is an integration starter. The final course submission must install dependencies and prepare data in Colab automatically, run the full pipeline without mounting a personal drive, save and reload `.npy` or `.h5` features, and include a PDF report with real experiments and contribution evidence.
+
+| Area | Owner | Next deliverable |
+|---|---|---|
+| Data, EDA, split | A | Approved 24-class manifest, label map, audited split v1 |
+| Features and classifiers | B | Two pretrained extractors, feature files, E2/E3/E4 |
+| Evaluation and Colab | C | Shared metrics, result registry, clean `Run all` |
+
+Names and student details will be added after the first group meeting. The instructor must also confirm dataset uniqueness across groups and the 24-class scope.
+
+## Repository structure
+
+```text
+configs/       Shared configuration
+docs/          Project plan and dataset audit
+features/      Saved feature output; large files are ignored by Git
+metadata/      Versioned manifest, split, and label map once approved
+modules/       Shared data contracts, feature I/O, classifiers, evaluation
+notebooks/     Colab front end
+reports/       Progress and final report artifacts
+results/       Generated experiments and figures; ignored by Git
+scripts/       Dataset download, audit, and repository checks
+tests/         Small checks for alignment and evaluation contracts
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branch names, Conventional Commit messages, pull request review, validation, and artifact handling. New commits and pull requests are checked by the [quality workflow](.github/workflows/quality.yml). Each experiment must record its config, split version, feature provenance, and result files before it enters the report.
+
+## Dataset and citation
+
+The dataset's README asks users to cite the original paper and states that the dataset should not be redistributed. This repository contains no raw images or original archive; use the public source link in the configuration. Do not commit raw data, credentials, or large feature caches. Check the course-approved sharing method before publishing extracted embeddings.
+
+Nataraj et al., [*Malware Images: Visualization and Automatic Classification*](https://doi.org/10.1145/2016904.2016908), VizSec 2011.
+
+Before final submission, the group must add the course code, instructor, member names and student IDs, and links to the report and Colab notebook, following the course assignment.
