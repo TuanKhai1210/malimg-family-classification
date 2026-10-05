@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -36,10 +37,13 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           if [ "$EVENT_NAME" = "pull_request" ]; then
             python scripts/check_commit_message.py --message "$PR_TITLE"
             python scripts/check_commit_message.py --range "$BASE_SHA..$HEAD_SHA"
+          elif [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            python scripts/check_commit_message.py --range "$BEFORE_SHA..HEAD"
           else
             python scripts/check_commit_message.py --rev HEAD
           fi

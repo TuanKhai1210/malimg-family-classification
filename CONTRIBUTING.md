@@ -31,7 +31,9 @@ test(eval): cover representative-per-group scoring
 
 Avoid subjects such as `update`, `fix bug`, `final`, or `add files`. Mark a breaking interface change with `!` before the colon and explain the migration in the body, for example `refactor(features)!: version the feature-store schema`.
 
-The [quality workflow](.github/workflows/quality.yml) checks new commit messages in pull requests and the latest commit on `main`. Check a message locally with `python scripts/check_commit_message.py --message "docs(readme): explain the data policy"`. The existing initial scaffold commit predates this convention; do not rewrite published history to rename it.
+The [quality workflow](.github/workflows/quality.yml) checks pull request titles and new non-merge commits in each pull request or push to `main`. It also reruns when a pull request title is edited. Check a message locally with `python scripts/check_commit_message.py --message "docs(readme): explain the data policy"`. The existing initial scaffold commit predates this convention; do not rewrite published history to rename it.
+
+These automated checks report failures; they do not by themselves prevent direct pushes or merging. Reviewers must confirm that the checks pass. [AGENTS.md](AGENTS.md) records the same working agreements for coding assistants.
 
 ## Before requesting review
 
