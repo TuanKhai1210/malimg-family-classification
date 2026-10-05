@@ -1,0 +1,48 @@
+# Data and generated artifacts
+data/
+metadata/malimg_manifest.csv
+metadata/malimg_summary.json
+metadata/dataset_manifest_*.csv
+metadata/split_manifest_*.csv
+metadata/split_summary_*.json
+features/*
+!features/.gitkeep
+results/*
+!results/.gitkeep
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.zip
+*.png
+*.jpg
+*.jpeg
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Python and notebooks
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,11 @@
+{
+  "dataset_name": "MalImg",
+  "dataset_url": "https://www.dropbox.com/scl/fi/wdb6omeiu2lg796qvt9l7/malimg_dataset.zip?rlkey=63q2xqmtlm66gilf6idd2c9k7&dl=1",
+  "archive_bytes": 1174609734,
+  "archive_sha256": "9766ae9f1daa520e367fb486ca94728fe1485c0f5cb8314c312d77089a1fe9ec",
+  "excluded_families": ["Yuner.A"],
+  "split_seed": 42,
+  "split_target": {"train": 0.70, "val": 0.15, "test": 0.15},
+  "primary_metric": "macro_f1_unique_pixel_representatives",
+  "status": "planning; instructor approval and split v1 pending"
+}
