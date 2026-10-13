@@ -1,0 +1,7 @@
+{
+  "description": "Optional E0/E1 experiments. Merge the experiments list into a copy of project.json.",
+  "experiments": [
+    {"id": "E0", "extractor": "image_size", "classifier": "logistic_regression", "c_values": [0.1, 1.0, 10.0]},
+    {"id": "E1", "extractor": "hog", "classifier": "linear_svm", "c_values": [0.1, 1.0, 10.0]}
+  ]
+}
