@@ -58,6 +58,8 @@ python scripts/run_pipeline.py final
 
 Lệnh final không fit lại scaler/classifier. Nó kiểm hash/config/split/feature/model,
 đánh giá test một lần và khóa output. Chạy lại cùng final chỉ đọc kết quả đã khóa.
+Phiên bản numpy/scikit-learn/joblib phải khớp môi trường validation trước khi
+nạp model; artifacts có ghi phiên bản để nhóm khôi phục đúng môi trường.
 Đổi config hoặc artifact sau khóa sẽ báo lỗi. Không xóa lock để tiếp tục chọn theo
 test; nếu có lỗi thật, review provenance và ghi rõ quyết định xử lý.
 

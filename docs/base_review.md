@@ -37,8 +37,8 @@ near-duplicates. Scope/split vẫn cần nhóm và giảng viên duyệt.
 
 ## Kiểm phần mềm
 
-- 55 tests thành công, không skip, trên virtual environment local (54 tests ở
-  lượt suite đầy đủ và nhóm integration/packaging được kiểm lại sau sửa cuối).
+- 56 tests thành công trong lượt suite đầy đủ cuối, không skip, trên virtual
+  environment local.
 - Kiểm archive/path/ảnh hỏng, reproducibility, leak/cross-label conflict,
   ảnh/artifact bị sửa và đổi policy mà giữ cùng manifest version.
 - Kiểm alignment X/y/IDs, cache/checksums, weights/transform và source ảnh.
@@ -47,6 +47,8 @@ near-duplicates. Scope/split vẫn cần nhóm và giảng viên duyệt.
 - Integration bằng ảnh giả lập: prepare → EDA → extraction → persistence →
   classifier validation → final khóa → draft ZIP. Kiểm train-only scaler/PCA,
   không nạp test arrays khi chọn, không refit final, warnings/failures và stale artifacts.
+- Final kiểm phiên bản numpy/scikit-learn/joblib khớp môi trường validation
+  trước khi nạp model đã lưu; đổi môi trường phải khôi phục phiên bản tương ứng.
 - Notebook kiểm schema và cú pháp; outputs/execution counts được để trống.
 - Đã thực thi đủ 6 code cells của notebook trên dữ liệu giả lập local, gồm
   validation/final, từ thư mục upload không có `.git`. Bước cài/tải bị tắt cho

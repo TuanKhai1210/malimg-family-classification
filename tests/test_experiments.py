@@ -217,6 +217,24 @@ class ExperimentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "final test is locked"):
                 self.validate()
 
+    def test_final_rejects_incompatible_serialization_versions_before_loading(self):
+        from modules.experiments import _environment
+        result = self.validate()
+        original_environment = _environment()
+        for package in ("numpy", "scikit-learn", "joblib"):
+            with self.subTest(package=package):
+                changed = json.loads(json.dumps(original_environment))
+                changed["software"][package] = "synthetic-incompatible-version"
+                with patch("modules.experiments._environment", return_value=changed), \
+                     patch("modules.experiments.joblib.load") as load_model, \
+                     patch("modules.experiments.load_feature_set") as load_features:
+                    with self.assertRaisesRegex(ValueError, f"{package} version differs"):
+                        self.run_final_test(self.root, self.config, self.rows, self.manifest_sha,
+                                            Path(result["selection_path"]))
+                    load_model.assert_not_called()
+                    load_features.assert_not_called()
+                self.assertFalse((self.root / "results" / "final_test.lock.json").exists())
+
     def test_signed_feature_store_rejects_current_config_resize_and_weights_changes(self):
         from modules.feature_io import atomic_json, file_sha256
 

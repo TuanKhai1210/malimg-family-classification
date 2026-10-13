@@ -640,8 +640,18 @@ def _verify_selection(root: Path, config: dict, rows: list[dict], manifest_sha25
         raise ValueError("selected models must remain in this results directory's trusted local runs")
     if _object_sha(_read_json(_root_path(root, selection["config_snapshot"]))) != selection["config_sha256"]:
         raise ValueError("config snapshot changed after validation")
-    if _file_sha(_root_path(root, selection["selection_audit_path"])) != selection["selection_audit_sha256"]:
+    audit_path = _root_path(root, selection["selection_audit_path"])
+    if _file_sha(audit_path) != selection["selection_audit_sha256"]:
         raise ValueError("selection audit changed after validation")
+    trained_software = _read_json(audit_path).get("environment", {}).get("software", {})
+    current_software = _environment()["software"]
+    for package in ("numpy", "scikit-learn", "joblib"):
+        if not trained_software.get(package) or trained_software[package] != current_software.get(package):
+            raise ValueError(
+                f"{package} version differs from validation: "
+                f"trained={trained_software.get(package)!r}, current={current_software.get(package)!r}; "
+                "restore the validation environment before loading its trusted local model"
+            )
     saved_selection = _read_json(run_dir / "selection.json")
     if saved_selection != selection:
         raise ValueError("selection differs from the preserved validation run")
