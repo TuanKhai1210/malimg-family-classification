@@ -1,5 +1,14 @@
 * text=auto
 *.py text eol=lf
-*.md text eol=lf
-*.ipynb text eol=lf
 *.json text eol=lf
+*.ipynb text eol=lf
+*.csv text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.npy -text
+*.npz -text
+*.h5 -text
+*.png binary
+*.zip binary

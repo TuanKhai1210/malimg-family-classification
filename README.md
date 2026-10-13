@@ -7,16 +7,16 @@ Pretrained visual features · Traditional classifiers · Leakage-aware evaluatio
 
 [![Project status](https://img.shields.io/badge/status-active%20development-2563eb?style=flat-square)](#project-status)
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)](#getting-started)
-[![PyTorch planned](https://img.shields.io/badge/PyTorch-feature%20pipeline%20planned-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](#method)
+[![PyTorch](https://img.shields.io/badge/PyTorch-frozen%20features-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](#method)
 [![Quality checks](https://github.com/TuanKhai1210/malimg-family-classification/actions/workflows/quality.yml/badge.svg?branch=main)](https://github.com/TuanKhai1210/malimg-family-classification/actions/workflows/quality.yml)
 
-[Overview](#overview) · [Getting started](#getting-started) · [Method](#method) · [Project status](#project-status) · [Contributing](CONTRIBUTING.md)
+[Overview](#overview) · [Getting started](#getting-started) · [Review and train](docs/review_and_train.md) · [Method](#method) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
 ## Overview
 
-This three-person Machine Learning course project studies **which malware family** an image belongs to. Each grayscale image is derived from the bytes of one malware sample. The planned core pipeline extracts features with pretrained image models, saves those features, and fits traditional classifiers on them. It does not perform benign-versus-malicious detection.
+This three-person Machine Learning course project studies **which malware family** an image belongs to. Each grayscale image is derived from the bytes of one malware sample. The implemented core pipeline prepares an audited group split, extracts frozen pretrained features, saves and reloads those features, and fits traditional classifiers. The study covers known families in the selected benchmark.
 
 | Project fact | Current plan |
 |---|---|
@@ -46,36 +46,50 @@ python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 
-The tests use small synthetic examples and do not download MalImg or train a model.
+The tests use synthetic images/features and small classifier fits. They do not download MalImg, download pretrained weights or train a benchmark model. Install `requirements-dev.txt` to additionally validate notebook format.
 
-To reproduce the dataset inventory, download the public archive and verify its SHA-256 before inspecting it:
+Prepare images, candidate manifests, the label map, the pixel-group split and EDA:
 
 ```bash
-python scripts/download_malimg.py
-python scripts/inspect_malimg.py data/MalImg_original_dataset.zip
+python scripts/check_environment.py
+python scripts/run_pipeline.py prepare
 ```
 
-The archive is approximately **1.17 GB**. The audit writes local files under `metadata/`; those files are evidence for the original 25-class archive, not an approved train/validation/test split. The public URL and audited checksum are recorded in [`configs/project.json`](configs/project.json).
+The archive is approximately **1.17 GB**. Preparation verifies its audited SHA-256 before selectively extracting images. An existing ZIP can be supplied with `--archive PATH`; it is still verified. Generated data and artifacts stay out of Git. The public URL, checksum, split settings, transforms and experiment search grids are in [`configs/project.json`](configs/project.json).
+
+After the group reviews the configuration and candidate split, run frozen feature extraction and validation selection:
+
+```bash
+python scripts/run_pipeline.py train
+```
+
+This runs E2/E3/E4, reuses only verified matching feature caches, fits preprocessing on train, saves all C trials and selects each configuration using validation Macro-F1. After freezing the choices, explicitly evaluate the held-out test set:
+
+```bash
+python scripts/run_pipeline.py final
+```
+
+See the Vietnamese [review and training guide](docs/review_and_train.md) for Colab, GPU setup, outputs, optional E0/E1 baselines, final-test locks and packaging. Open [`main_colab.ipynb`](notebooks/main_colab.ipynb) in Colab; its first mode is `prepare` for review, and `all` enables the full validation pipeline. The final submission requires an explicit final-test run and clean Colab verification.
 
 ## Method
 
-The planned path is **image → preprocessing → frozen pretrained feature extractor → saved `.npy` features → traditional classifier → evaluation**. The feature matrix, labels, sample IDs, model weights, transforms, and manifest version must remain aligned and traceable.
+The implemented path is **image → preprocessing → frozen pretrained feature extractor → saved `.npy` features → traditional classifier → evaluation**. Feature arrays, labels and sample IDs are checked against the manifest; weights, transforms, versions and artifact hashes are recorded. Cache signatures detect changes to data, extraction settings and implementation.
 
-The source archive contains 800 `Yuner.A` files with one unique decoded pixel image. The main benchmark excludes this family so that exact-pixel duplicates cannot be placed across training and held-out partitions for that class. The remaining images will be split by family and exact-pixel group; all files in a group must stay in one partition. This policy does not rule out near-duplicates or prove independence between malware samples.
+The source archive contains 800 `Yuner.A` files with one unique decoded pixel image. The main benchmark excludes this family so that exact-pixel duplicates cannot be placed across training and held-out partitions for that class. The remaining images are split by family and exact-pixel group; all files in a group stay in one partition. The current candidate contains **5,978 / 1,281 / 1,280 files** and **5,615 / 1,202 / 1,201 pixel groups** in train/validation/test. It remains subject to team review and instructor approval. This policy does not rule out near-duplicates or prove independence between malware samples.
 
 The core comparison uses the same locked split and evaluation unit. Validation selects configurations; test is reserved for the final assessment. File-level metrics will be reported alongside the representative-per-group metrics so the effect of duplicate weighting remains visible. Fine-tuning is an optional extension after the core pipeline works.
 
 ## Project status
 
-> **In progress — 5 October 2026.** The archive has been audited and the repository scaffold is available. Instructor approval of MalImg and the 24-class scope, the official split, pretrained features, model results, and clean Colab `Runtime > Run all` verification are still pending. No benchmark scores are claimed here.
+> **Reviewable base — 13 October 2026.** Full-image preparation, candidate splitting and EDA have run locally. Frozen extractors, classical selection, evaluation, caching, result exports and packaging are implemented and tested with synthetic inputs. Full MalImg features/model results, instructor approval, group acceptance of the split and clean Colab `Runtime > Run all` verification remain pending. No benchmark scores are claimed here.
 
-The current [`notebooks/main_colab.ipynb`](notebooks/main_colab.ipynb) is an integration starter. The final course submission must install dependencies and prepare data in Colab automatically, run the full pipeline without mounting a personal drive, save and reload `.npy` or `.h5` features, and include a PDF report with real experiments and contribution evidence.
+The [`notebooks/main_colab.ipynb`](notebooks/main_colab.ipynb) now installs dependencies, obtains data through the public source and calls the shared pipeline without mounting a personal drive. It saves and reloads `.npy` features. The final course submission also needs a real PDF report, group details and contribution evidence; [`final_report_template.md`](reports/final_report_template.md) is a drafting aid.
 
 | Area | Owner | Next deliverable |
 |---|---|---|
-| Data, EDA, split | A | Approved 24-class manifest, label map, audited split v1 |
-| Features and classifiers | B | Two pretrained extractors, feature files, E2/E3/E4 |
-| Evaluation and Colab | C | Shared metrics, result registry, clean `Run all` |
+| Data, EDA, split | A | Review generated EDA/split and confirm the scope with the instructor |
+| Features and classifiers | B | Review settings, then run features and E2/E3/E4 on GPU |
+| Evaluation and Colab | C | Review result/lock behavior and verify clean Colab `Run all` |
 
 Names and student details will be added after the first group meeting. The instructor must also confirm dataset uniqueness across groups and the 24-class scope.
 
@@ -86,12 +100,12 @@ configs/       Shared configuration
 docs/          Project plan and dataset audit
 features/      Saved feature output; large files are ignored by Git
 metadata/      Versioned manifest, split, and label map once approved
-modules/       Shared data contracts, feature I/O, classifiers, evaluation
+modules/       Data, splits, EDA, frozen features, selection, evaluation, packaging
 notebooks/     Colab front end
 reports/       Progress and final report artifacts
 results/       Generated experiments and figures; ignored by Git
-scripts/       Dataset download, audit, and repository checks
-tests/         Small checks for alignment and evaluation contracts
+scripts/       Pipeline CLI, environment checks, packaging and audit utilities
+tests/         Data/cache/alignment checks and synthetic end-to-end integration
 ```
 
 ## Contributing

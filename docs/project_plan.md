@@ -4,6 +4,12 @@ Phân loại họ mã độc từ ảnh biểu diễn dữ liệu nhị phân
 
 BẢN BÀN GIAO CHO NHÓM | Phiên bản 1.0 | 30/09/2026
 
+> Cập nhật triển khai 13/10/2026: base core đã được dựng; dữ liệu, split ứng viên
+> và EDA đã chạy trên archive đầy đủ. Xem [hướng dẫn review/train](review_and_train.md)
+> và [bằng chứng kiểm base](base_review.md). Các mục “chưa có” dưới đây mô tả
+> trạng thái khi lập kế hoạch 30/09; full pretrained features, benchmark results,
+> nhóm/GV duyệt split và kiểm Colab sạch vẫn đang chờ thực hiện.
+
 ## 01. Đọc trước: mục tiêu và quyết định chung
 
 **Tên đề tài:** Phân loại họ mã độc từ ảnh MalImg bằng đặc trưng pretrained và mô hình học máy truyền thống.

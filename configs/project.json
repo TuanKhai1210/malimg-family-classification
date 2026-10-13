@@ -7,5 +7,48 @@
   "split_seed": 42,
   "split_target": {"train": 0.70, "val": 0.15, "test": 0.15},
   "primary_metric": "macro_f1_unique_pixel_representatives",
-  "status": "planning; instructor approval and split v1 pending"
+  "manifest_version": "v1",
+  "instructor_approved": false,
+  "status": "reviewable implementation; instructor approval and benchmark runs pending",
+  "data_dir": "data/images",
+  "results_dir": "results",
+  "features": {
+    "image_size": 224,
+    "resize_policy": "direct",
+    "batch_size": 32,
+    "device": "auto",
+    "num_workers": 0,
+    "cache": true,
+    "weights": {
+      "resnet50": "IMAGENET1K_V2",
+      "convnext_tiny": "IMAGENET1K_V1"
+    }
+  },
+  "training": {
+    "seed": 42,
+    "max_iter": 5000,
+    "class_weight": "balanced",
+    "train_unit": "file",
+    "pca_components": null
+  },
+  "experiments": [
+    {
+      "id": "E2",
+      "extractor": "resnet50",
+      "classifier": "logistic_regression",
+      "c_values": [0.1, 1.0, 10.0]
+    },
+    {
+      "id": "E3",
+      "extractor": "resnet50",
+      "classifier": "linear_svm",
+      "c_values": [0.1, 1.0, 10.0]
+    },
+    {
+      "id": "E4",
+      "extractor": "convnext_tiny",
+      "classifier": "linear_svm",
+      "c_values": [0.1, 1.0, 10.0]
+    }
+  ]
 }

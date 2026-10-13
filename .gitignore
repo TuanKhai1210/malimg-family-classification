@@ -5,6 +5,8 @@ metadata/malimg_summary.json
 metadata/dataset_manifest_*.csv
 metadata/split_manifest_*.csv
 metadata/split_summary_*.json
+metadata/label_map_*.json
+metadata/preparation_provenance_*.json
 features/*
 !features/.gitkeep
 results/*
@@ -17,6 +19,7 @@ results/*
 *.pth
 *.ckpt
 *.onnx
+*.joblib
 *.zip
 *.png
 *.jpg
