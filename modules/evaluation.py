@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sklearn.metrics import accuracy_score, f1_score, precision_recall_fscore_support
+from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 
 
 def classification_metrics(
@@ -40,7 +40,11 @@ def classification_metrics(
         "unit": "file" if representative is None else "unique_pixel_representative",
         "n_samples": len(actual),
         "accuracy": float(accuracy_score(actual, predicted)),
-        "macro_f1": float(f1_score(actual, predicted, labels=list(labels), average="macro", zero_division=0)),
+        "macro_precision": float(precision.mean()),
+        "macro_recall": float(recall.mean()),
+        "macro_f1": float(f1.mean()),
+        "labels": [int(label) for label in labels],
+        "confusion_matrix": confusion_matrix(actual, predicted, labels=list(labels)).tolist(),
         "per_class": {
             str(label): {
                 "precision": float(precision[i]),
