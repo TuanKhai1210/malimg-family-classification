@@ -20,9 +20,11 @@ import platform
 import sys
 import time
 import warnings
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from threading import Event, Thread
 
 import joblib
 import numpy as np
@@ -72,6 +74,74 @@ def _write_json(path: Path, value: Any) -> None:
     temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False)
                          + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+@contextmanager
+def _run_lock(directory: Path):
+    """Advisory process lock, released by the OS even if a kernel is killed."""
+    with (directory / ".active.lock").open("a+b") as stream:
+        if stream.tell() == 0:
+            stream.write(b"0")
+            stream.flush()
+        stream.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise ValueError("Validation run is already active in another process") from error
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _fit_progress(label: str):
+    stopped = Event()
+    started = time.perf_counter()
+
+    def heartbeat():
+        while not stopped.wait(30):
+            print(f"{label}: fitting on CPU, elapsed {time.perf_counter() - started:.0f}s", flush=True)
+
+    worker = Thread(target=heartbeat, daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        worker.join()
+
+
+def _completed_trial(directory: Path, c: float) -> dict | None:
+    path = directory / "trial.json"
+    if not path.is_file():
+        return None
+    trial = _read_json(path)
+    if trial.get("status") != "completed":
+        return None
+    if trial.get("c") != c or not trial.get("artifacts_sha256"):
+        raise ValueError("Completed trial lacks compatible checkpoint identity; start a new run")
+    for name, checksum in trial["artifacts_sha256"].items():
+        if name not in {"model.joblib", "predictions.csv", "metrics.json", "warnings.json"}:
+            raise ValueError("Unexpected checkpoint artifact")
+        if not (directory / name).is_file() or _file_sha(directory / name) != checksum:
+            raise ValueError(f"Completed trial artifact changed: {directory.name}/{name}")
+    if set(trial["artifacts_sha256"]) != {"model.joblib", "predictions.csv", "metrics.json", "warnings.json"}:
+        raise ValueError("Completed trial checkpoint is incomplete")
+    if trial["metrics"] != _read_json(directory / "metrics.json"):
+        raise ValueError("Completed trial metrics changed")
+    if trial.get("model_sha256") != trial["artifacts_sha256"]["model.joblib"]:
+        raise ValueError("Completed trial model identity changed")
+    return trial
 
 
 def _write_csv(path: Path, rows: list[dict], fields: list[str]) -> None:
@@ -263,7 +333,7 @@ def _load_aligned(
 
 def _environment() -> dict:
     packages = {}
-    for package in ("numpy", "scikit-learn", "joblib", "matplotlib", "torch", "torchvision"):
+    for package in ("numpy", "scipy", "scikit-learn", "joblib", "matplotlib", "torch", "torchvision"):
         try:
             packages[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -450,7 +520,36 @@ def _registry(output: Path, record: dict) -> None:
 
 
 def run_validation(root: Path, config: dict, rows: list[dict], manifest_sha256: str,
-                   feature_dirs: dict[str, Path]) -> dict:
+                   feature_dirs: dict[str, Path], *, resume_run: str | Path | None = None,
+                   checkpoint_callback=None) -> dict:
+    """Start a preserved run, or explicitly resume matching completed trials.
+
+    A resumed run requires identical config, manifest, features, implementation
+    and serialization-library versions. An interrupted fit starts over; completed
+    trials are verified and skipped. Concurrent writers to one run are rejected.
+    """
+    root = Path(root).resolve()
+    output = _output_dir(root, config)
+    if (output / "final_test.lock.json").exists() or (output / "final_test").exists():
+        raise ValueError("final test is locked; validation cannot change its selection")
+    if resume_run is None:
+        run_id = "validation_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "_" + _object_sha(config)[:8]
+        directory = output / "runs" / run_id
+        directory.mkdir(parents=True, exist_ok=False)
+    else:
+        reference = Path(resume_run)
+        directory = ((output / "runs" / reference) if len(reference.parts) == 1
+                     else _root_path(root, reference)).resolve()
+        if directory.parent != (output / "runs").resolve() or not directory.is_dir():
+            raise ValueError("resume_run must name an existing validation run inside results/runs")
+    with _run_lock(directory):
+        return _run_validation(root, config, rows, manifest_sha256, feature_dirs,
+                               directory, resume_run is not None, checkpoint_callback)
+
+
+def _run_validation(root: Path, config: dict, rows: list[dict], manifest_sha256: str,
+                    feature_dirs: dict[str, Path], run_dir: Path, resuming: bool,
+                    checkpoint_callback) -> dict:
     """Fit candidates on train, select C on validation, and lock final-test inputs.
 
     The returned selection_path is the explicit artifact consumed by final testing.
@@ -469,14 +568,30 @@ def run_validation(root: Path, config: dict, rows: list[dict], manifest_sha256: 
     if not manifest_sha256:
         raise ValueError("manifest SHA-256 is required")
     config_sha = _object_sha(config)
-    run_id = "validation_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "_" + config_sha[:8]
-    run_dir = output / "runs" / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
+    run_id = run_dir.name
     environment = _environment()
     environment["implementation_sha256"] = _implementation_signature()
-    _write_json(run_dir / "config.json", config)
-    _write_json(run_dir / "environment.json", environment)
-    started_at = _now()
+    identity = {"config_sha256": config_sha, "manifest_sha256": manifest_sha256,
+                "manifest_rows_sha256": _object_sha(rows),
+                "implementation_sha256": environment["implementation_sha256"],
+                "python_version": list(sys.version_info[:2]),
+                "software": {key: environment["software"][key]
+                             for key in ("numpy", "scipy", "scikit-learn", "joblib")},
+                "feature_stores": {name: _feature_signatures(_root_path(root, feature_dirs[name]))
+                                   for name in sorted({item["extractor"] for item in experiments})}}
+    resume_path = run_dir / "resume.json"
+    if resuming:
+        if not resume_path.is_file() or _read_json(resume_path).get("identity") != identity:
+            raise ValueError("Resume identity mismatch (or legacy run): use the original environment/source or start a new run")
+        started_at = _read_json(resume_path)["started_at"]
+        if _read_json(run_dir / "config.json") != config:
+            raise ValueError("Resume config snapshot changed")
+    else:
+        started_at = _now()
+        _write_json(run_dir / "config.json", config)
+        _write_json(run_dir / "environment.json", environment)
+        _write_json(resume_path, {"identity": identity, "started_at": started_at})
+    print(f"{'Resuming' if resuming else 'Starting'} validation: {run_id}", flush=True)
     registry = {"run_id": run_id, "stage": "validation", "status": "running",
                 "started_at": started_at, "config_sha256": config_sha,
                 "manifest_sha256": manifest_sha256, "output_dir": _reference(root, run_dir),
@@ -495,6 +610,8 @@ def run_validation(root: Path, config: dict, rows: list[dict], manifest_sha256: 
                  "feature_stores": {}, "experiments": []}
     stores = {}
     try:
+        if checkpoint_callback:
+            checkpoint_callback("validation_started", run_dir)
         for experiment in experiments:
             extractor = experiment["extractor"]
             if extractor not in stores:
@@ -525,17 +642,33 @@ def run_validation(root: Path, config: dict, rows: list[dict], manifest_sha256: 
             if config.get("training", {}).get("train_unit", "file") == "representative":
                 train_mask = np.array([_flag(row["eval_representative"]) for row in train_rows])
             experiment_dir = run_dir / experiment["id"]
-            experiment_dir.mkdir()
+            experiment_dir.mkdir(exist_ok=resuming)
             trials = []
             for trial_index, c in enumerate(sorted(float(value) for value in experiment.get("c_values", [0.1, 1, 10]))):
                 trial_dir = experiment_dir / f"trial_{trial_index:02d}"
+                label = f"{experiment['id']}/trial_{trial_index:02d} C={c:g}"
+                previous = _completed_trial(trial_dir, c) if resuming else None
+                if previous is not None:
+                    if previous.get("model_path") != _reference(root, trial_dir / "model.joblib"):
+                        raise ValueError("Completed trial model path changed")
+                    trials.append(previous)
+                    print(f"Reused verified checkpoint: {label} ({previous['fit_seconds']:.2f}s)", flush=True)
+                    continue
+                if trial_dir.exists():
+                    attempt = trial_dir.with_name(trial_dir.name + "_attempt_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
+                    trial_dir.rename(attempt)
                 trial_dir.mkdir()
                 trial = {"c": c, "status": "running", "warnings": [], "started_at": _now()}
+                _write_json(trial_dir / "trial.json", trial)
+                registry["active_trial"] = {"experiment_id": experiment["id"], "c": c,
+                                             "trial_dir": _reference(root, trial_dir)}
+                _registry(output, registry)
+                print(f"Fitting {label}: {int(train_mask.sum())} x {x_train.shape[1]} on CPU", flush=True)
                 captured = []
                 try:
                     model = build_classifier(experiment["classifier"], c=c, **options)
                     fit_started = time.perf_counter()
-                    with warnings.catch_warnings(record=True) as captured:
+                    with warnings.catch_warnings(record=True) as captured, _fit_progress(label):
                         warnings.simplefilter("always")
                         model.fit(x_train[train_mask], y_train[train_mask])
                     trial["fit_seconds"] = time.perf_counter() - fit_started
@@ -561,9 +694,19 @@ def run_validation(root: Path, config: dict, rows: list[dict], manifest_sha256: 
                 trial["converged"] = trial["status"] == "completed" and not any(
                     warning["category"] == "ConvergenceWarning" for warning in trial["warnings"])
                 trial["completed_at"] = _now()
-                _write_json(trial_dir / "trial.json", trial)
                 _write_json(trial_dir / "warnings.json", trial["warnings"])
+                if trial["status"] == "completed":
+                    trial["artifacts_sha256"] = {name: _file_sha(trial_dir / name) for name in
+                                                ("model.joblib", "predictions.csv", "metrics.json", "warnings.json")}
+                # Completion is committed last, after every required artifact exists.
+                _write_json(trial_dir / "trial.json", trial)
                 trials.append(trial)
+                print(f"Saved {label}: {trial['status']}, fit={trial.get('fit_seconds', 0):.2f}s, "
+                      f"converged={trial['converged']}", flush=True)
+                registry.pop("active_trial", None)
+                _registry(output, registry)
+                if checkpoint_callback:
+                    checkpoint_callback(f"{experiment['id']}_trial_{trial_index:02d}", run_dir)
             completed = [trial for trial in trials if trial["status"] == "completed"]
             record = {"experiment_id": experiment["id"], "extractor": extractor,
                       "classifier": experiment["classifier"], "trials": trials}
@@ -612,9 +755,29 @@ def run_validation(root: Path, config: dict, rows: list[dict], manifest_sha256: 
                          "selection_path": _reference(root, selection_path)})
         _registry(output, registry)
         summarize_results(output)
+        if checkpoint_callback:
+            checkpoint_callback("validation_completed", run_dir)
         return {"status": "completed", "selection_path": str(selection_path),
                 "run_dir": str(run_dir), "registry_path": str(output / "registry.json"),
                 "comparison_path": str(output / "comparison.csv"), "experiments": selection["experiments"]}
+    except KeyboardInterrupt:
+        active = registry.get("active_trial")
+        if active:
+            path = _root_path(root, active["trial_dir"]) / "trial.json"
+            if path.is_file():
+                interrupted = _read_json(path)
+                if interrupted.get("status") == "running":
+                    interrupted.update({"status": "interrupted", "interrupted_at": _now()})
+                    _write_json(path, interrupted)
+        registry.update({"status": "interrupted", "interrupted_at": _now()})
+        _registry(output, registry)
+        print(f"Interrupted; completed trials are saved. Resume with resume_run='{run_id}'", flush=True)
+        if checkpoint_callback:
+            try:
+                checkpoint_callback("validation_interrupted", run_dir)
+            except Exception as error:
+                print(f"Backup failed; local checkpoints remain: {error}", flush=True)
+        raise
     except Exception as error:
         registry.update({"status": "failed", "completed_at": _now(),
                          "error_type": type(error).__name__, "error": str(error)})

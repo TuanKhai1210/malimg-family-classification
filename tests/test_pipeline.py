@@ -5,6 +5,9 @@ import copy
 import hashlib
 import io
 import json
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -115,6 +118,71 @@ class PipelineTests(unittest.TestCase):
             with zipfile.ZipFile(package) as archive:
                 self.assertIn("custom_results/registry.json", archive.namelist())
                 self.assertIn("tests/test_example.py", archive.namelist())
+
+    def test_notebook_saves_then_restores_and_resumes_in_a_fresh_python_process(self):
+        """Execute every code cell; fake only the interactive Drive mount."""
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "workspace"
+            root.mkdir()
+            for name in ("modules", "scripts", "notebooks", "configs"):
+                shutil.copytree(ROOT / name, root / name, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copyfile(ROOT / "requirements.txt", root / "requirements.txt")
+            archive_path = base / "synthetic.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for class_id in range(2):
+                    for index in range(12):
+                        image = Image.new("L", (32 + index, 40 + class_id * 20), index + class_id * 80)
+                        stream = io.BytesIO()
+                        image.save(stream, format="PNG")
+                        archive.writestr(f"images/Class{class_id}/{index}.png", stream.getvalue())
+            config = self.config()
+            config.update(excluded_families=[], archive_bytes=archive_path.stat().st_size,
+                          archive_sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest())
+            config["experiments"] = [{"id": "E0", "extractor": "image_size",
+                                      "classifier": "logistic_regression", "c_values": [0.1, 1]}]
+            (root / "configs/project.json").write_text(json.dumps(config), encoding="utf-8")
+            worker = base / "execute_notebook.py"
+            worker.write_text('''import json, pathlib, sys, types
+from unittest.mock import patch
+options = json.loads(pathlib.Path(sys.argv[1]).read_text())
+colab = types.ModuleType('google.colab')
+colab.drive = types.SimpleNamespace(mount=lambda path: print('Synthetic mount:', path))
+sys.modules['google.colab'] = colab
+notebook = json.loads(pathlib.Path(options['notebook']).read_text(encoding='utf-8'))
+scope = {}
+for cell in notebook['cells']:
+    if cell['cell_type'] != 'code':
+        continue
+    source = ''.join(cell['source'])
+    if cell['id'] == 'pipeline-run' and options.get('RESUME_RUN'):
+        with patch('modules.experiments.build_classifier', side_effect=AssertionError('must resume')):
+            exec(compile(source, cell['id'], 'exec'), scope)
+    else:
+        exec(compile(source, cell['id'], 'exec'), scope)
+    if cell['id'] == 'controls':
+        scope.update({key: value for key, value in options.items() if key != 'notebook'})
+''', encoding="utf-8")
+            options = {"notebook": str(root / "notebooks/main_colab.ipynb"),
+                       "STAGE": "all", "INSTALL_DEPENDENCIES": False,
+                       "ARCHIVE_PATH": str(archive_path), "USE_DRIVE_BACKUP": True,
+                       "BACKUP_DIR": str(base / "drive")}
+            def execute(settings):
+                payload = base / "options.json"
+                payload.write_text(json.dumps(settings), encoding="utf-8")
+                result = subprocess.run([sys.executable, "-X", "utf8", str(worker), str(payload)],
+                                        cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=90)
+                self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-3000:])
+                return result.stdout
+            execute(options)
+            run_id = next((root / "results/runs").glob("validation_*")).name
+            snapshot = sorted((base / "drive/snapshots").glob("*.zip"))[-1]
+            restored = base / "restored"
+            output = execute({**options, "STAGE": "train", "RESTORE_SNAPSHOT": str(snapshot),
+                              "RESTORE_TO": str(restored), "RESUME_RUN": run_id})
+            self.assertIn("Reused verified checkpoint", output)
+            self.assertTrue((restored / "results/selection.json").is_file())
+            self.assertFalse((restored / "results/final_test.lock.json").exists())
 
 
 if __name__ == "__main__":

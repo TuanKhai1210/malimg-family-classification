@@ -12,6 +12,7 @@ from .config import validate_config
 def run_pipeline(
     root: str | Path, config: dict[str, Any], *, stage: str = "prepare",
     archive_path: str | Path | None = None, final_test: bool = False,
+    resume_run: str | Path | None = None, backup_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Prepare, extract or train; final test always requires an explicit choice.
 
@@ -21,7 +22,14 @@ def run_pipeline(
     validate_config(config)
     if stage not in {"prepare", "eda", "extract", "train", "final", "all"}:
         raise ValueError(f"unknown pipeline stage: {stage}")
+    if resume_run is not None and stage not in {"train", "all"}:
+        raise ValueError("resume_run is only used with train or all")
     root = Path(root).resolve()
+    def checkpoint(label, run_dir=None):
+        if backup_dir is not None:
+            from .checkpoints import save_backup
+            run_label = f"{run_dir.name}_{label}" if run_dir else label
+            save_backup(root, backup_dir, label=run_label, config=config)
     if stage in {"train", "all"}:
         results = root / config.get("results_dir", "results")
         if (results / "final_test.lock.json").exists() or (results / "final_test").exists():
@@ -46,11 +54,14 @@ def run_pipeline(
             print(f"Extracting/reusing {name} features", flush=True)
             feature_dirs[name] = extract_features(root, config, rows, Path(prepared["data_root"]),
                                                   prepared["manifest_sha256"], name)
+            checkpoint(f"features_{name}")
         result["feature_dirs"] = {name: str(path) for name, path in feature_dirs.items()}
         if stage in {"train", "all"}:
             from .experiments import run_validation
 
-            result["validation"] = run_validation(root, config, rows, prepared["manifest_sha256"], feature_dirs)
+            result["validation"] = run_validation(root, config, rows, prepared["manifest_sha256"], feature_dirs,
+                                                   resume_run=resume_run,
+                                                   checkpoint_callback=checkpoint if backup_dir else None)
     if stage == "final" or (stage == "all" and final_test):
         from .experiments import run_final_test
 
@@ -63,4 +74,5 @@ def run_pipeline(
     status = root / config.get("results_dir", "results") / "pipeline_status.json"
     status.parent.mkdir(parents=True, exist_ok=True)
     status.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    checkpoint(f"pipeline_{stage}_completed")
     return result
