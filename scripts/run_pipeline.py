@@ -21,11 +21,14 @@ def main() -> None:
     parser.add_argument("--archive", type=Path, help="use an existing archive; still verify its size and SHA-256")
     parser.add_argument("--final-test", action="store_true", help="with all: evaluate test after validation selection")
     parser.add_argument("--verbose", action="store_true", help="print full per-class summaries and artifact metadata")
+    parser.add_argument("--resume-run", help="explicit validation run ID; reuse verified completed trials")
+    parser.add_argument("--backup-dir", type=Path, help="external mounted directory for checkpoint backups")
     args = parser.parse_args()
     if args.final_test and args.stage != "all":
         parser.error("--final-test is only used with all; the final stage is already explicit")
     result = run_pipeline(ROOT, load_config(args.config), stage=args.stage,
-                          archive_path=args.archive, final_test=args.final_test)
+                          archive_path=args.archive, final_test=args.final_test,
+                          resume_run=args.resume_run, backup_dir=args.backup_dir)
     shown = result if args.verbose else {key: value for key, value in result.items() if key != "dataset"}
     if not args.verbose:
         shown["dataset"] = {key: value for key, value in result["dataset"].items() if key != "summary"}

@@ -5,11 +5,27 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from os import PathLike
 from pathlib import Path
 from typing import Any
 
 EXTRACTORS = {"resnet50", "convnext_tiny", "image_size", "hog"}
 CLASSIFIERS = {"logistic_regression", "linear_svm"}
+
+
+def validate_path_option(value, name: str, *, optional: bool = False) -> Path | None:
+    """Name invalid path controls before any download, extraction or fitting."""
+    expected = "None or a nonempty path" if optional else "a nonempty path"
+    if value is None and optional:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, PathLike)):
+        raise TypeError(f"{name} must be {expected}, not {type(value).__name__}; True/False are toggles")
+    if not str(value).strip():
+        raise ValueError(f"{name} must be {expected}, not a blank string")
+    try:
+        return Path(value)
+    except TypeError as error:
+        raise TypeError(f"{name} must be {expected}") from error
 
 
 def config_hash(config: dict[str, Any]) -> str:
@@ -78,7 +94,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if len(set(values)) != len(values):
             raise ValueError(f"duplicate C values in {exp_id}")
     for name, default in (("data_dir", "data/images"), ("results_dir", "results"), ("features_dir", "features")):
-        path = Path(config.get(name, default))
+        path = validate_path_option(config.get(name, default), name)
         if path.is_absolute() or ".." in path.parts:
             raise ValueError(f"{name} must remain inside the repository")
     config_hash(config)

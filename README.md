@@ -71,6 +71,12 @@ python scripts/run_pipeline.py final
 
 See the Vietnamese [review and training guide](docs/review_and_train.md) for Colab, GPU setup, outputs, optional E0/E1 baselines, final-test locks and packaging. Open [`main_colab.ipynb`](notebooks/main_colab.ipynb) in Colab; its first mode is `prepare` for review, and `all` enables the full validation pipeline. The final submission requires an explicit final-test run and clean Colab verification.
 
+For long sessions, use the optional [checkpoint and recovery workflow](docs/checkpoint_and_recovery.md).
+It saves trial status and progress, resumes verified completed trials, and backs up
+features and versioned result snapshots to a mounted directory such as Google Drive.
+Drive is disabled by default; public-data preparation remains independent of personal storage.
+An interrupted classifier fit starts over, while completed trials can be reused.
+
 ## Method
 
 The implemented path is **image → preprocessing → frozen pretrained feature extractor → saved `.npy` features → traditional classifier → evaluation**. Feature arrays, labels and sample IDs are checked against the manifest; weights, transforms, versions and artifact hashes are recorded. Cache signatures detect changes to data, extraction settings and implementation.

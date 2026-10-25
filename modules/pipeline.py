@@ -6,29 +6,42 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .config import validate_config
+from .config import validate_config, validate_path_option
 
 
 def run_pipeline(
     root: str | Path, config: dict[str, Any], *, stage: str = "prepare",
     archive_path: str | Path | None = None, final_test: bool = False,
+    resume_run: str | Path | None = None, backup_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Prepare, extract or train; final test always requires an explicit choice.
 
     `all` executes preparation, EDA, extraction and validation selection.
     Pass final_test=True only after the group freezes the experimental choices.
     """
+    root = validate_path_option(root, "repo_root (root)").resolve()
+    archive_path = validate_path_option(archive_path, "ARCHIVE_PATH (archive_path)", optional=True)
+    resume_run = validate_path_option(resume_run, "RESUME_RUN (resume_run)", optional=True)
+    backup_dir = validate_path_option(backup_dir, "BACKUP_DIR (backup_dir)", optional=True)
+    if type(final_test) is not bool:
+        raise TypeError("FINAL_TEST (final_test) must be True or False")
     validate_config(config)
     if stage not in {"prepare", "eda", "extract", "train", "final", "all"}:
         raise ValueError(f"unknown pipeline stage: {stage}")
-    root = Path(root).resolve()
+    if resume_run is not None and stage not in {"train", "all"}:
+        raise ValueError("resume_run is only used with train or all")
+    def checkpoint(label, run_dir=None):
+        if backup_dir is not None:
+            from .checkpoints import save_backup
+            run_label = f"{run_dir.name}_{label}" if run_dir else label
+            save_backup(root, backup_dir, label=run_label, config=config)
     if stage in {"train", "all"}:
         results = root / config.get("results_dir", "results")
         if (results / "final_test.lock.json").exists() or (results / "final_test").exists():
             raise ValueError("Final test artifacts already exist. Use the final stage to read the locked result; review a new protocol before changing the selection.")
     from .data import prepare_dataset, read_manifest
 
-    prepared = prepare_dataset(root, config, Path(archive_path) if archive_path else None)
+    prepared = prepare_dataset(root, config, archive_path)
     rows = read_manifest(prepared["manifest_path"])
     result: dict[str, Any] = {"stage": stage, "dataset": prepared,
                               "instructor_approved": config.get("instructor_approved", False)}
@@ -46,11 +59,14 @@ def run_pipeline(
             print(f"Extracting/reusing {name} features", flush=True)
             feature_dirs[name] = extract_features(root, config, rows, Path(prepared["data_root"]),
                                                   prepared["manifest_sha256"], name)
+            checkpoint(f"features_{name}")
         result["feature_dirs"] = {name: str(path) for name, path in feature_dirs.items()}
         if stage in {"train", "all"}:
             from .experiments import run_validation
 
-            result["validation"] = run_validation(root, config, rows, prepared["manifest_sha256"], feature_dirs)
+            result["validation"] = run_validation(root, config, rows, prepared["manifest_sha256"], feature_dirs,
+                                                   resume_run=resume_run,
+                                                   checkpoint_callback=checkpoint if backup_dir else None)
     if stage == "final" or (stage == "all" and final_test):
         from .experiments import run_final_test
 
@@ -63,4 +79,5 @@ def run_pipeline(
     status = root / config.get("results_dir", "results") / "pipeline_status.json"
     status.parent.mkdir(parents=True, exist_ok=True)
     status.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    checkpoint(f"pipeline_{stage}_completed")
     return result
