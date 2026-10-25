@@ -48,6 +48,32 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(cell["outputs"], [])
                 self.assertIsNone(cell["execution_count"])
 
+    def test_notebook_rejects_invalid_working_root_before_drive_or_network_calls(self):
+        notebook = json.loads((ROOT / "notebooks/main_colab.ipynb").read_text(encoding="utf-8"))
+        cells = {cell["id"]: "".join(cell["source"]) for cell in notebook["cells"]}
+        for value in (True, False, 123, [], "", "   "):
+            with self.subTest(value=value):
+                scope = {}
+                exec(cells["controls"], scope)
+                scope.update(WORKING_ROOT=value, USE_DRIVE_BACKUP=True)
+                with patch("subprocess.run") as run, patch("subprocess.check_output") as output:
+                    with self.assertRaisesRegex((TypeError, ValueError), "WORKING_ROOT"):
+                        exec(cells["setup"], scope)
+                    run.assert_not_called()
+                    output.assert_not_called()
+
+    def test_notebook_accepts_explicit_string_and_path_workspaces(self):
+        notebook = json.loads((ROOT / "notebooks/main_colab.ipynb").read_text(encoding="utf-8"))
+        cells = {cell["id"]: "".join(cell["source"]) for cell in notebook["cells"]}
+        for value in (str(ROOT), ROOT):
+            with self.subTest(value=value):
+                scope = {}
+                exec(cells["controls"], scope)
+                scope.update(WORKING_ROOT=value, INSTALL_DEPENDENCIES=False, USE_DRIVE_BACKUP=False)
+                with patch("subprocess.run"), patch("subprocess.check_output", return_value="fixture\n"):
+                    exec(cells["setup"], scope)
+                self.assertEqual(scope["repo_root"].resolve(), ROOT.resolve())
+
     def test_prepare_extract_train_final_and_draft_package(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

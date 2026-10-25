@@ -159,5 +159,14 @@ không thay checksum source để nhận các model cũ như được tạo bở
 trước khi clone lại. Chỉ lưu notebook không giữ `/content`; không kết luận dữ liệu
 còn/mất từ traceback import hoặc từ output cũ trong notebook.
 
+## Lỗi `Path(WORKING_ROOT)` nhận bool
+
+`WORKING_ROOT` là đường dẫn tùy chọn, không phải nút bật/tắt. Ở cell đầu đặt
+`WORKING_ROOT = None` để setup tự tìm repo; chạy lại cell đầu rồi cell setup.
+Nếu đang dùng workspace đã restore, đặt chuỗi đường dẫn, ví dụ
+`WORKING_ROOT = '/content/malimg-restored'`. Bật sao lưu bằng
+`USE_DRIVE_BACKUP = True`; không đặt `WORKING_ROOT = True` hoặc `False`.
+Notebook mới kiểm giá trị này trước khi mount Drive hoặc clone/cài thư viện.
+
 Nguồn về runtime/Drive: [Colab FAQ](https://research.google.com/colaboratory/faq.html),
 [mã nguồn drive.mount](https://github.com/googlecolab/colabtools/blob/main/google/colab/drive.py).
