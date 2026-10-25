@@ -168,5 +168,23 @@ Nếu đang dùng workspace đã restore, đặt chuỗi đường dẫn, ví d�
 `USE_DRIVE_BACKUP = True`; không đặt `WORKING_ROOT = True` hoặc `False`.
 Notebook mới kiểm giá trị này trước khi mount Drive hoặc clone/cài thư viện.
 
+## Lỗi `Path(...)` nhận bool khi gọi pipeline
+
+Các biến đường dẫn không phải toggle. Với một run validation mới, dùng:
+
+```python
+ARCHIVE_PATH = None       # tự tải dữ liệu công khai
+RESUME_RUN = None         # run mới
+RESTORE_SNAPSHOT = None   # không restore ZIP
+FINAL_TEST = False        # còn chọn cấu hình trên validation
+USE_DRIVE_BACKUP = True
+```
+
+Nếu cần resume/restore, thay `None` bằng run ID hoặc đường dẫn thật trong dấu
+nháy. Giữ `BACKUP_DIR` là đường dẫn Drive, không đổi thành `True`. Setup và pipeline
+kiểm các path options trước I/O, báo đúng tên biến sai thay vì lỗi sâu trong
+`pathlib`. Khi sửa controls, chạy lại controls → setup → configuration → pipeline;
+thay code trên GitHub không tự đổi giá trị đang có trong kernel Colab.
+
 Nguồn về runtime/Drive: [Colab FAQ](https://research.google.com/colaboratory/faq.html),
 [mã nguồn drive.mount](https://github.com/googlecolab/colabtools/blob/main/google/colab/drive.py).

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .config import validate_config
+from .config import validate_config, validate_path_option
 
 
 def run_pipeline(
@@ -19,12 +19,17 @@ def run_pipeline(
     `all` executes preparation, EDA, extraction and validation selection.
     Pass final_test=True only after the group freezes the experimental choices.
     """
+    root = validate_path_option(root, "repo_root (root)").resolve()
+    archive_path = validate_path_option(archive_path, "ARCHIVE_PATH (archive_path)", optional=True)
+    resume_run = validate_path_option(resume_run, "RESUME_RUN (resume_run)", optional=True)
+    backup_dir = validate_path_option(backup_dir, "BACKUP_DIR (backup_dir)", optional=True)
+    if type(final_test) is not bool:
+        raise TypeError("FINAL_TEST (final_test) must be True or False")
     validate_config(config)
     if stage not in {"prepare", "eda", "extract", "train", "final", "all"}:
         raise ValueError(f"unknown pipeline stage: {stage}")
     if resume_run is not None and stage not in {"train", "all"}:
         raise ValueError("resume_run is only used with train or all")
-    root = Path(root).resolve()
     def checkpoint(label, run_dir=None):
         if backup_dir is not None:
             from .checkpoints import save_backup
@@ -36,7 +41,7 @@ def run_pipeline(
             raise ValueError("Final test artifacts already exist. Use the final stage to read the locked result; review a new protocol before changing the selection.")
     from .data import prepare_dataset, read_manifest
 
-    prepared = prepare_dataset(root, config, Path(archive_path) if archive_path else None)
+    prepared = prepare_dataset(root, config, archive_path)
     rows = read_manifest(prepared["manifest_path"])
     result: dict[str, Any] = {"stage": stage, "dataset": prepared,
                               "instructor_approved": config.get("instructor_approved", False)}

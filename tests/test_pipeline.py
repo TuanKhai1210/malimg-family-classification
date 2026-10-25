@@ -38,6 +38,30 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_config(config)
 
+    def test_invalid_runtime_paths_fail_before_dataset_preparation(self):
+        for option, name in (("root", "repo_root"), ("archive_path", "ARCHIVE_PATH"),
+                             ("resume_run", "RESUME_RUN"), ("backup_dir", "BACKUP_DIR")):
+            for value in (True, False, 1, "", "  "):
+                with self.subTest(option=option, value=value):
+                    arguments = {"root": ROOT, "config": self.config(), "stage": "train", option: value}
+                    with patch("modules.data.prepare_dataset") as prepare:
+                        with self.assertRaisesRegex((TypeError, ValueError), name):
+                            run_pipeline(**arguments)
+                        prepare.assert_not_called()
+        for name in ("data_dir", "results_dir", "features_dir"):
+            config = self.config()
+            config[name] = True
+            with self.subTest(directory=name), patch("modules.data.prepare_dataset") as prepare:
+                with self.assertRaisesRegex(TypeError, name):
+                    run_pipeline(ROOT, config)
+                prepare.assert_not_called()
+
+    def test_final_test_flag_must_be_a_boolean_before_preparation(self):
+        with patch("modules.data.prepare_dataset") as prepare:
+            with self.assertRaisesRegex(TypeError, "FINAL_TEST"):
+                run_pipeline(ROOT, self.config(), final_test="False")
+            prepare.assert_not_called()
+
     def test_notebook_code_is_valid_python_and_has_no_fake_outputs(self):
         notebook = json.loads((ROOT / "notebooks/main_colab.ipynb").read_text(encoding="utf-8"))
         self.assertEqual(notebook["nbformat"], 4)
@@ -73,6 +97,20 @@ class PipelineTests(unittest.TestCase):
                 with patch("subprocess.run"), patch("subprocess.check_output", return_value="fixture\n"):
                     exec(cells["setup"], scope)
                 self.assertEqual(scope["repo_root"].resolve(), ROOT.resolve())
+
+    def test_notebook_names_each_bad_path_control_before_setup_calls(self):
+        notebook = json.loads((ROOT / "notebooks/main_colab.ipynb").read_text(encoding="utf-8"))
+        cells = {cell["id"]: "".join(cell["source"]) for cell in notebook["cells"]}
+        for name in ("ARCHIVE_PATH", "RESUME_RUN", "RESTORE_SNAPSHOT", "BACKUP_DIR", "RESTORE_TO", "CONFIG_FILE"):
+            for value in (True, False):
+                with self.subTest(option=name, value=value):
+                    scope = {}
+                    exec(cells["controls"], scope)
+                    scope.update({name: value, "USE_DRIVE_BACKUP": True})
+                    with patch("subprocess.run") as run:
+                        with self.assertRaisesRegex(TypeError, name):
+                            exec(cells["setup"], scope)
+                        run.assert_not_called()
 
     def test_prepare_extract_train_final_and_draft_package(self):
         with tempfile.TemporaryDirectory() as temporary:
