@@ -5,6 +5,9 @@ import copy
 import hashlib
 import io
 import json
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -35,6 +38,30 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_config(config)
 
+    def test_invalid_runtime_paths_fail_before_dataset_preparation(self):
+        for option, name in (("root", "repo_root"), ("archive_path", "ARCHIVE_PATH"),
+                             ("resume_run", "RESUME_RUN"), ("backup_dir", "BACKUP_DIR")):
+            for value in (True, False, 1, "", "  "):
+                with self.subTest(option=option, value=value):
+                    arguments = {"root": ROOT, "config": self.config(), "stage": "train", option: value}
+                    with patch("modules.data.prepare_dataset") as prepare:
+                        with self.assertRaisesRegex((TypeError, ValueError), name):
+                            run_pipeline(**arguments)
+                        prepare.assert_not_called()
+        for name in ("data_dir", "results_dir", "features_dir"):
+            config = self.config()
+            config[name] = True
+            with self.subTest(directory=name), patch("modules.data.prepare_dataset") as prepare:
+                with self.assertRaisesRegex(TypeError, name):
+                    run_pipeline(ROOT, config)
+                prepare.assert_not_called()
+
+    def test_final_test_flag_must_be_a_boolean_before_preparation(self):
+        with patch("modules.data.prepare_dataset") as prepare:
+            with self.assertRaisesRegex(TypeError, "FINAL_TEST"):
+                run_pipeline(ROOT, self.config(), final_test="False")
+            prepare.assert_not_called()
+
     def test_notebook_code_is_valid_python_and_has_no_fake_outputs(self):
         notebook = json.loads((ROOT / "notebooks/main_colab.ipynb").read_text(encoding="utf-8"))
         self.assertEqual(notebook["nbformat"], 4)
@@ -44,6 +71,46 @@ class PipelineTests(unittest.TestCase):
                 ast.parse(source if isinstance(source, str) else "".join(source))
                 self.assertEqual(cell["outputs"], [])
                 self.assertIsNone(cell["execution_count"])
+
+    def test_notebook_rejects_invalid_working_root_before_drive_or_network_calls(self):
+        notebook = json.loads((ROOT / "notebooks/main_colab.ipynb").read_text(encoding="utf-8"))
+        cells = {cell["id"]: "".join(cell["source"]) for cell in notebook["cells"]}
+        for value in (True, False, 123, [], "", "   "):
+            with self.subTest(value=value):
+                scope = {}
+                exec(cells["controls"], scope)
+                scope.update(WORKING_ROOT=value, USE_DRIVE_BACKUP=True)
+                with patch("subprocess.run") as run, patch("subprocess.check_output") as output:
+                    with self.assertRaisesRegex((TypeError, ValueError), "WORKING_ROOT"):
+                        exec(cells["setup"], scope)
+                    run.assert_not_called()
+                    output.assert_not_called()
+
+    def test_notebook_accepts_explicit_string_and_path_workspaces(self):
+        notebook = json.loads((ROOT / "notebooks/main_colab.ipynb").read_text(encoding="utf-8"))
+        cells = {cell["id"]: "".join(cell["source"]) for cell in notebook["cells"]}
+        for value in (str(ROOT), ROOT):
+            with self.subTest(value=value):
+                scope = {}
+                exec(cells["controls"], scope)
+                scope.update(WORKING_ROOT=value, INSTALL_DEPENDENCIES=False, USE_DRIVE_BACKUP=False)
+                with patch("subprocess.run"), patch("subprocess.check_output", return_value="fixture\n"):
+                    exec(cells["setup"], scope)
+                self.assertEqual(scope["repo_root"].resolve(), ROOT.resolve())
+
+    def test_notebook_names_each_bad_path_control_before_setup_calls(self):
+        notebook = json.loads((ROOT / "notebooks/main_colab.ipynb").read_text(encoding="utf-8"))
+        cells = {cell["id"]: "".join(cell["source"]) for cell in notebook["cells"]}
+        for name in ("ARCHIVE_PATH", "RESUME_RUN", "RESTORE_SNAPSHOT", "BACKUP_DIR", "RESTORE_TO", "CONFIG_FILE"):
+            for value in (True, False):
+                with self.subTest(option=name, value=value):
+                    scope = {}
+                    exec(cells["controls"], scope)
+                    scope.update({name: value, "USE_DRIVE_BACKUP": True})
+                    with patch("subprocess.run") as run:
+                        with self.assertRaisesRegex(TypeError, name):
+                            exec(cells["setup"], scope)
+                        run.assert_not_called()
 
     def test_prepare_extract_train_final_and_draft_package(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -115,6 +182,71 @@ class PipelineTests(unittest.TestCase):
             with zipfile.ZipFile(package) as archive:
                 self.assertIn("custom_results/registry.json", archive.namelist())
                 self.assertIn("tests/test_example.py", archive.namelist())
+
+    def test_notebook_saves_then_restores_and_resumes_in_a_fresh_python_process(self):
+        """Execute every code cell; fake only the interactive Drive mount."""
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "workspace"
+            root.mkdir()
+            for name in ("modules", "scripts", "notebooks", "configs"):
+                shutil.copytree(ROOT / name, root / name, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copyfile(ROOT / "requirements.txt", root / "requirements.txt")
+            archive_path = base / "synthetic.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for class_id in range(2):
+                    for index in range(12):
+                        image = Image.new("L", (32 + index, 40 + class_id * 20), index + class_id * 80)
+                        stream = io.BytesIO()
+                        image.save(stream, format="PNG")
+                        archive.writestr(f"images/Class{class_id}/{index}.png", stream.getvalue())
+            config = self.config()
+            config.update(excluded_families=[], archive_bytes=archive_path.stat().st_size,
+                          archive_sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest())
+            config["experiments"] = [{"id": "E0", "extractor": "image_size",
+                                      "classifier": "logistic_regression", "c_values": [0.1, 1]}]
+            (root / "configs/project.json").write_text(json.dumps(config), encoding="utf-8")
+            worker = base / "execute_notebook.py"
+            worker.write_text('''import json, pathlib, sys, types
+from unittest.mock import patch
+options = json.loads(pathlib.Path(sys.argv[1]).read_text())
+colab = types.ModuleType('google.colab')
+colab.drive = types.SimpleNamespace(mount=lambda path: print('Synthetic mount:', path))
+sys.modules['google.colab'] = colab
+notebook = json.loads(pathlib.Path(options['notebook']).read_text(encoding='utf-8'))
+scope = {}
+for cell in notebook['cells']:
+    if cell['cell_type'] != 'code':
+        continue
+    source = ''.join(cell['source'])
+    if cell['id'] == 'pipeline-run' and options.get('RESUME_RUN'):
+        with patch('modules.experiments.build_classifier', side_effect=AssertionError('must resume')):
+            exec(compile(source, cell['id'], 'exec'), scope)
+    else:
+        exec(compile(source, cell['id'], 'exec'), scope)
+    if cell['id'] == 'controls':
+        scope.update({key: value for key, value in options.items() if key != 'notebook'})
+''', encoding="utf-8")
+            options = {"notebook": str(root / "notebooks/main_colab.ipynb"),
+                       "STAGE": "all", "INSTALL_DEPENDENCIES": False,
+                       "ARCHIVE_PATH": str(archive_path), "USE_DRIVE_BACKUP": True,
+                       "BACKUP_DIR": str(base / "drive")}
+            def execute(settings):
+                payload = base / "options.json"
+                payload.write_text(json.dumps(settings), encoding="utf-8")
+                result = subprocess.run([sys.executable, "-X", "utf8", str(worker), str(payload)],
+                                        cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=90)
+                self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-3000:])
+                return result.stdout
+            execute(options)
+            run_id = next((root / "results/runs").glob("validation_*")).name
+            snapshot = sorted((base / "drive/snapshots").glob("*.zip"))[-1]
+            restored = base / "restored"
+            output = execute({**options, "STAGE": "train", "RESTORE_SNAPSHOT": str(snapshot),
+                              "RESTORE_TO": str(restored), "RESUME_RUN": run_id})
+            self.assertIn("Reused verified checkpoint", output)
+            self.assertTrue((restored / "results/selection.json").is_file())
+            self.assertFalse((restored / "results/final_test.lock.json").exists())
 
 
 if __name__ == "__main__":

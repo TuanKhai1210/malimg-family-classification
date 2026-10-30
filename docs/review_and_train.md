@@ -138,3 +138,10 @@ Lệnh final kiểm report tồn tại, approval, final lock/checksum và featur
 được chọn. Vẫn cần nhóm kiểm nội dung PDF, link truy cập và Run all sạch trước
 khi nộp. Mặc định package có features; nếu nộp bằng link ngoài phải review riêng
 theo đề. Hạn nội bộ hiện theo thông tin nhóm: **30/11/2026**; lịch LMS có ưu tiên.
+
+## Sao lưu và khôi phục
+
+Xem [checkpoint_and_recovery.md](checkpoint_and_recovery.md) trước một lượt chạy dài.
+Notebook hỗ trợ Drive cá nhân tùy chọn, snapshot theo thời điểm, log từng trial và
+resume các trial hoàn tất đã kiểm identity. Lần fit đang dở phải chạy lại; lưu
+notebook riêng không lưu features/models trên máy Colab.
