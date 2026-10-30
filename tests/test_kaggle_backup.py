@@ -1,12 +1,15 @@
 """Remote transport fixtures: private-only, readback, outages and recovery."""
 
+import hashlib
+import io
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from modules.kaggle_backup import KaggleDatasetBackup
+from modules.kaggle_backup import KaggleDatasetBackup, RECOVERY_FILE, RECOVERY_MAGIC, unpack_recovery
 from modules.checkpoints import restore_backup
 
 
@@ -15,7 +18,7 @@ class MissingDataset(Exception):
 
 
 class FakeKaggle:
-    """A byte-preserving provider fixture, not evidence of live Kaggle I/O."""
+    """Model archive expansion as well as transport; not live Kaggle evidence."""
     def __init__(self):
         self.exists = False
         self.private = True
@@ -23,6 +26,7 @@ class FakeKaggle:
         self.versions = []
         self.corrupt_download = False
         self.processing = False
+        self.downloads = []
 
     def dataset_metadata(self, reference, folder):
         if not self.exists:
@@ -35,7 +39,18 @@ class FakeKaggle:
         return "processing" if self.processing else "ready"
 
     def _publish(self, folder):
-        self.files = {p.name: p.read_bytes() for p in Path(folder).iterdir() if p.is_file()}
+        self.files = {}
+        def add(name, data):
+            if name.endswith(".zip") or data.startswith(b"PK\x03\x04"):
+                prefix = name[:-4] if name.endswith(".zip") else name
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    for child in archive.namelist():
+                        add(prefix + "/" + child, archive.read(child))
+            else:
+                self.files[name] = data
+        for path in Path(folder).iterdir():
+            if path.is_file() and path.name != "dataset-metadata.json":
+                add(path.name, path.read_bytes())
         self.versions.append(dict(self.files))
         self.exists = True
         return SimpleNamespace(status="ok", error=None)
@@ -49,8 +64,9 @@ class FakeKaggle:
         return self._publish(folder)
 
     def dataset_download_file(self, reference, name, *, path, **kwargs):
+        self.downloads.append(name)
         data = self.files[name]
-        if self.corrupt_download and name == "recovery.zip":
+        if self.corrupt_download and name in {"recovery.zip", RECOVERY_FILE}:
             data += b"corruption"
         (Path(path) / name).write_bytes(data)
         return True
@@ -142,3 +158,60 @@ class KaggleBackupTests(unittest.TestCase):
         self.api.dataset_download_file = conflicting
         with self.assertRaisesRegex(RuntimeError, "NOT verified"):
             backup("epoch_000001")
+
+    def test_provider_expands_legacy_zip_but_framed_payload_survives(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            with zipfile.ZipFile(folder / "recovery.zip", "w") as archive:
+                archive.writestr("example.txt", "provider expands this archive")
+            self.api._publish(folder)
+        self.assertNotIn("recovery.zip", self.api.files)
+        self.assertIn("recovery/example.txt", self.api.files)
+        receipt = self.backup()("epoch_000001")
+        self.assertEqual(receipt["schema"], 2)
+        self.assertEqual(receipt["recovery_file"], RECOVERY_FILE)
+        self.assertEqual(set(self.api.files), {"latest.json", RECOVERY_FILE})
+        self.assertTrue(self.api.files[RECOVERY_FILE].startswith(RECOVERY_MAGIC))
+        self.assertTrue(receipt["remote_verified"])
+
+    def test_legacy_unexpanded_zip_receipt_can_still_restore(self):
+        backup = self.backup()
+        backup("epoch_000001")
+        with zipfile.ZipFile(io.BytesIO(self.api.files[RECOVERY_FILE])) as framed:
+            legacy = io.BytesIO()
+            with zipfile.ZipFile(legacy, "w", zipfile.ZIP_STORED) as archive:
+                for name in framed.namelist():
+                    archive.writestr(name, framed.read(name))
+        data = legacy.getvalue()
+        receipt = json.loads(self.api.files["latest.json"])
+        receipt["schema"] = 1
+        receipt.pop("recovery_file")
+        receipt["recovery_sha256"] = hashlib.sha256(data).hexdigest()
+        self.api.files = {"latest.json": json.dumps(receipt).encode(), "recovery.zip": data}
+        snapshot = backup.download(Path(self.temp.name) / "legacy-download")
+        restored = restore_backup(snapshot, Path(self.temp.name) / "legacy-restored")
+        self.assertEqual(json.loads((restored / "results/progress.json").read_text())["epoch"], 1)
+
+    def test_unknown_receipt_schema_or_filename_stops_before_payload_download(self):
+        backup = self.backup()
+        backup("epoch_000001")
+        original = json.loads(self.api.files["latest.json"])
+        for patch in ({"schema": 3}, {"schema": True}, {"recovery_file": "../private.bin"}):
+            receipt = dict(original, **patch)
+            self.api.files["latest.json"] = json.dumps(receipt).encode()
+            self.api.downloads.clear()
+            with self.assertRaisesRegex(ValueError, "schema|filename"):
+                backup.download(Path(self.temp.name) / ("invalid-" + str(len(list(Path(self.temp.name).iterdir())))))
+            self.assertEqual(self.api.downloads, ["latest.json"])
+
+    def test_framed_payload_requires_header_even_with_matching_checksum(self):
+        self.backup()("epoch_000001")
+        receipt = json.loads(self.api.files["latest.json"])
+        data = b"X" * len(RECOVERY_MAGIC) + self.api.files[RECOVERY_FILE][len(RECOVERY_MAGIC):]
+        payload = Path(self.temp.name) / RECOVERY_FILE
+        payload.write_bytes(data)
+        receipt["recovery_sha256"] = hashlib.sha256(data).hexdigest()
+        destination = Path(self.temp.name) / "bad-header"
+        with self.assertRaisesRegex(ValueError, "header"):
+            unpack_recovery(payload, destination, receipt=receipt)
+        self.assertFalse(destination.exists())

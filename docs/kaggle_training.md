@@ -59,13 +59,18 @@ Sau mỗi epoch, tạo một version Dataset private có:
 
 ```text
 latest.json             # run/checkpoint ID và checksums
-recovery.zip
+recovery.bin             # magic prefix + ZIP container; giữ nguyên bytes
   snapshots/<timestamp>_<label>.zip
   features/<feature-identity>.zip
 ```
 
 Snapshot gồm source/config/manifest và model/results/history. Không gồm raw
 images, dataset ZIP, .git, .venv hoặc credentials. Không tự xóa version cũ.
+Kaggle tự giải nén archive được upload. Vì vậy schema2 dùng tên recovery.bin
+và header riêng thay vì upload recovery.zip: schema1 có thể bị biến thành thư
+mục recovery/features và recovery/snapshots, làm tải lại recovery.zip báo404.
+Không bỏ qua bước readback khi gặp lỗi này. Runtime còn local snapshot/features
+thì cập nhật module backup và tạo version mới; cache hợp lệ không cần trích lại.
 Uploader chờ ready, kiểm private, tải receipt/payload về và so hash. Lỗi mạng,
 quota, writer khác, sai hash hoặc chưa ready làm dừng trước epoch sau; local
 checkpoint còn nếu VM còn. Khi VM mất chỉ cứu được mốc đã lưu thành công bên ngoài.
@@ -92,7 +97,10 @@ FINAL_TEST = False
 Chạy đủ cell controls trước setup. Restore source trong snapshot, config/settings
 đúng run; không tự chọn thí nghiệm theo tên mới nhất. Nếu version cuối thuộc run
 khác, run thiếu sẽ báo lỗi. Có thể attach Dataset version cũ làm input, đặt
-RESTORE_PAYLOAD='/kaggle/input/.../recovery.zip', RESTORE_REMOTE=False.
+RESTORE_PAYLOAD='/kaggle/input/.../recovery.bin', RESTORE_REMOTE=False.
+Vẫn đọc được schema1/recovery.zip nếu file ZIP gốc còn nguyên trên server hoặc
+đã lưu local. Version schema1 đã bị server giải nén không được gọi là backup đã
+verify; không tự ghép lại archive rồi bỏ qua checksum gốc.
 
 Exact resume kiểm Python major/minor, numpy/scipy/sklearn/joblib, source,
 config/manifest/sample order/bytes features. Pin thư viện không đổi được Python.
@@ -146,7 +154,8 @@ lại. Final started/failed cần review lock; không tự xóa để thử ti�
 có kết quả final riêng; final course packaging/report format vẫn cần review.
 
 malimg-review-results.zip thiếu features, chỉ là export đọc/chia sẻ kết quả;
-recovery.zip mới là payload resume. Notebook không dump full JSON hàng nghìn dòng.
+recovery.bin mới là payload resume (schema1 cũ dùng recovery.zip).
+Notebook không dump full JSON hàng nghìn dòng.
 
 ## Phạm vi xác minh
 

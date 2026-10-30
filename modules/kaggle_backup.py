@@ -21,6 +21,21 @@ from pathlib import Path
 from .checkpoints import _safe_name, _sha, save_backup
 
 
+RECOVERY_FILE = "recovery.bin"
+RECOVERY_MAGIC = b"MALIMG_RECOVERY_V1\n"
+
+
+def _recovery_file(receipt):
+    """Allow only our two transport formats, never an arbitrary receipt path."""
+    schema = receipt.get("schema")
+    if type(schema) is not int or schema not in {1, 2}:
+        raise ValueError("Unsupported remote recovery receipt schema")
+    expected = "recovery.zip" if schema == 1 else RECOVERY_FILE
+    if receipt.get("recovery_file", expected if schema == 1 else None) != expected:
+        raise ValueError("Invalid remote recovery filename")
+    return expected
+
+
 def validate_dataset_ref(reference):
     if not isinstance(reference, str) or not re.fullmatch(r"[A-Za-z0-9_-]+/[a-z0-9][a-z0-9-]{5,49}", reference):
         raise ValueError("BACKUP_DATASET must be your Kaggle username/private-dataset-slug")
@@ -55,8 +70,9 @@ def authenticated_api():
 class KaggleDatasetBackup:
     """One writer per dedicated private dataset; versions never delete old versions.
 
-    Each version contains recovery.zip (latest snapshot + its feature bundle) and
-    latest.json. The bundle is uploaded/read back each time: account for network,
+    Each version contains recovery.bin (framed ZIP bytes) and latest.json. Kaggle
+    expands uploaded archives, so neither the suffix nor the prefix is ZIP-like.
+    The bundle is uploaded/read back each time: account for network,
     version/storage limits and keep epochs meaningful rather than tiny batches.
     """
 
@@ -116,7 +132,7 @@ class KaggleDatasetBackup:
         with zipfile.ZipFile(snapshot) as archive:
             record = json.loads(archive.read("BACKUP.json"))
         features = self.destination / _safe_name(record["feature_bundle"])
-        receipt = {"schema": 1, "checkpoint_id": uuid.uuid4().hex,
+        receipt = {"schema": 2, "recovery_file": RECOVERY_FILE, "checkpoint_id": uuid.uuid4().hex,
                    "dataset": self.reference, "label": label,
                    "run_id": run_dir.name if run_dir else None,
                    "snapshot": "snapshots/" + snapshot.name,
@@ -126,10 +142,15 @@ class KaggleDatasetBackup:
         try:
             with tempfile.TemporaryDirectory(prefix="malimg-kaggle-upload-") as folder:
                 folder = Path(folder)
-                payload = folder / "recovery.zip"
-                with zipfile.ZipFile(payload, "w", zipfile.ZIP_STORED) as archive:
-                    archive.write(snapshot, receipt["snapshot"])
-                    archive.write(features, receipt["feature_bundle"])
+                payload = folder / RECOVERY_FILE
+                # The prefix prevents archive sniffing as well as suffix-based
+                # expansion. ZipFile supports a leading preamble and still
+                # verifies the same nested snapshot/feature archive bytes.
+                with payload.open("wb") as stream:
+                    stream.write(RECOVERY_MAGIC)
+                    with zipfile.ZipFile(stream, "w", zipfile.ZIP_STORED) as archive:
+                        archive.write(snapshot, receipt["snapshot"])
+                        archive.write(features, receipt["feature_bundle"])
                 receipt["recovery_sha256"] = _sha(payload)
                 (folder / "latest.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
                 (folder / "dataset-metadata.json").write_text(json.dumps({
@@ -152,10 +173,10 @@ class KaggleDatasetBackup:
                 checked.mkdir()
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     self.api.dataset_download_file(self.reference, "latest.json", path=str(checked), force=True, quiet=True, unzip=True)
-                    self.api.dataset_download_file(self.reference, "recovery.zip", path=str(checked), force=True, quiet=True, unzip=True)
+                    self.api.dataset_download_file(self.reference, RECOVERY_FILE, path=str(checked), force=True, quiet=True, unzip=True)
                 if json.loads((checked / "latest.json").read_text(encoding="utf-8")) != receipt:
                     raise ValueError("Remote checkpoint changed or another writer replaced this dataset version")
-                if _sha(checked / "recovery.zip") != receipt["recovery_sha256"]:
+                if _sha(checked / RECOVERY_FILE) != receipt["recovery_sha256"]:
                     raise ValueError("Remote recovery payload checksum mismatch")
             receipt["remote_verified"] = True
             from .experiments import _write_json
@@ -177,15 +198,28 @@ class KaggleDatasetBackup:
         destination.mkdir(parents=True, exist_ok=False)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.api.dataset_download_file(self.reference, "latest.json", path=str(destination), force=True, quiet=True, unzip=True)
-            self.api.dataset_download_file(self.reference, "recovery.zip", path=str(destination), force=True, quiet=True, unzip=True)
         receipt = json.loads((destination / "latest.json").read_text(encoding="utf-8"))
-        if receipt.get("dataset") != self.reference or _sha(destination / "recovery.zip") != receipt.get("recovery_sha256"):
+        if receipt.get("dataset") != self.reference:
+            raise ValueError("Downloaded private backup dataset identity mismatch")
+        filename = _recovery_file(receipt)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.api.dataset_download_file(self.reference, filename, path=str(destination), force=True, quiet=True, unzip=True)
+        if _sha(destination / filename) != receipt.get("recovery_sha256"):
             raise ValueError("Downloaded private backup identity/checksum mismatch")
-        return unpack_recovery(destination / "recovery.zip", destination / "verified", receipt=receipt)
+        return unpack_recovery(destination / filename, destination / "verified", receipt=receipt)
 
 
 def unpack_recovery(payload, destination, *, receipt=None):
     """Extract exactly the two backup ZIPs, not arbitrary uploaded file paths."""
+    payload = Path(payload)
+    with payload.open("rb") as stream:
+        framed = stream.read(len(RECOVERY_MAGIC)) == RECOVERY_MAGIC
+    if receipt is not None:
+        filename = _recovery_file(receipt)
+        if filename == RECOVERY_FILE and not framed:
+            raise ValueError("Recovery payload is missing its transport header")
+    if payload.suffix == ".bin" and not framed:
+        raise ValueError("Recovery payload is missing its transport header")
     destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=False)
     with zipfile.ZipFile(payload) as archive:
