@@ -74,6 +74,12 @@ thì cập nhật module backup và tạo version mới; cache hợp lệ không
 Uploader chờ ready, kiểm private, tải receipt/payload về và so hash. Lỗi mạng,
 quota, writer khác, sai hash hoặc chưa ready làm dừng trước epoch sau; local
 checkpoint còn nếu VM còn. Khi VM mất chỉ cứu được mốc đã lưu thành công bên ngoài.
+Nếu receipt vừa publish chưa hiện đúng hoặc payload chưa đọc được (404/hash cũ),
+readback thử lại có giới hạn theo poll_timeout/poll_interval và không upload thêm
+version. Chỉ tải payload sau khi toàn bộ receipt khớp đúng checkpoint đang chờ;
+không chấp nhận checkpoint khác hoặc hash sai khi hết lượt. Lỗi có stage cụ thể
+như read_receipt, receipt_not_current, read_payload hoặc write_local_receipt;
+không in API body/token. Bỏ cell wrapper chẩn đoán cũ để thấy stage gốc này.
 
 Mỗi version hiện gửi lại snapshot và feature bundle rồi readback; có chi phí
 băng thông/thời gian/lưu trữ. Không upload theo minibatch. Giới hạn API/Dataset

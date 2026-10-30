@@ -25,6 +25,23 @@ RECOVERY_FILE = "recovery.bin"
 RECOVERY_MAGIC = b"MALIMG_RECOVERY_V1\n"
 
 
+def _http_status(error):
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        response = getattr(error, "response", None)
+        for value in (getattr(error, "status", None), getattr(error, "code", None),
+                      getattr(response, "status_code", None)):
+            try:
+                status = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 100 <= status <= 599:
+                return status
+        error = error.__cause__ or error.__context__
+    return None
+
+
 def _recovery_file(receipt):
     """Allow only our two transport formats, never an arbitrary receipt path."""
     schema = receipt.get("schema")
@@ -123,6 +140,34 @@ class KaggleDatasetBackup:
             self.sleep(self.poll_interval)
         raise TimeoutError("Kaggle version is not ready; local checkpoint remains saved")
 
+    def _readback(self, directory, receipt):
+        """Wait for this exact publication, never accept a stale/latest alias."""
+        steps = max(1, int(self.poll_timeout / max(self.poll_interval, 0.01)))
+        for attempt in range(steps):
+            try:
+                self._checkpoint_stage = "download_receipt"
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.api.dataset_download_file(self.reference, "latest.json", path=str(directory), force=True, quiet=True, unzip=True)
+                self._checkpoint_stage = "read_receipt"
+                actual = json.loads((directory / "latest.json").read_text(encoding="utf-8"))
+                if actual != receipt:
+                    self._checkpoint_stage = "receipt_not_current"
+                else:
+                    self._checkpoint_stage = "download_payload"
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        self.api.dataset_download_file(self.reference, RECOVERY_FILE, path=str(directory), force=True, quiet=True, unzip=True)
+                    self._checkpoint_stage = "read_payload"
+                    if _sha(directory / RECOVERY_FILE) == receipt["recovery_sha256"]:
+                        return
+                    self._checkpoint_stage = "payload_checksum_mismatch"
+            except Exception as error:
+                if _http_status(error) != 404:
+                    raise
+            if attempt + 1 < steps:
+                print(f"Readback pending: {self._checkpoint_stage}; {attempt + 1}/{steps}", flush=True)
+                self.sleep(self.poll_interval)
+        raise TimeoutError("The exact published checkpoint did not become readable within the retry budget")
+
     def __call__(self, label, run_dir=None):
         """Publish, wait, download, verify, then and only then mark remote success."""
         exists = self.preflight()
@@ -140,6 +185,7 @@ class KaggleDatasetBackup:
                    "feature_bundle": record["feature_bundle"],
                    "feature_bundle_sha256": record["feature_bundle_sha256"]}
         try:
+            self._checkpoint_stage = "package_payload"
             with tempfile.TemporaryDirectory(prefix="malimg-kaggle-upload-") as folder:
                 folder = Path(folder)
                 payload = folder / RECOVERY_FILE
@@ -159,6 +205,7 @@ class KaggleDatasetBackup:
                     "description": "Private own-group recovery artifacts. No raw malware binaries or images. "
                                    "Original dataset and pretrained-model terms remain applicable; no public redistribution grant.",
                 }), encoding="utf-8")
+                self._checkpoint_stage = "publish"
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     if exists:
                         response = self.api.dataset_create_version(str(folder), version_notes=f"{label} {receipt['checkpoint_id']}",
@@ -167,17 +214,15 @@ class KaggleDatasetBackup:
                         response = self.api.dataset_create_new(str(folder), public=False, quiet=True, convert_to_csv=False)
                 if response is None or getattr(response, "error", None) or str(getattr(response, "status", "")).lower() != "ok":
                     raise RuntimeError("Kaggle did not accept the backup version")
+                self._checkpoint_stage = "wait_ready"
                 self._ready()
+                self._checkpoint_stage = "verify_privacy"
                 self._metadata()  # verify private state after publication, too
                 checked = folder / "readback"
                 checked.mkdir()
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    self.api.dataset_download_file(self.reference, "latest.json", path=str(checked), force=True, quiet=True, unzip=True)
-                    self.api.dataset_download_file(self.reference, RECOVERY_FILE, path=str(checked), force=True, quiet=True, unzip=True)
-                if json.loads((checked / "latest.json").read_text(encoding="utf-8")) != receipt:
-                    raise ValueError("Remote checkpoint changed or another writer replaced this dataset version")
-                if _sha(checked / RECOVERY_FILE) != receipt["recovery_sha256"]:
-                    raise ValueError("Remote recovery payload checksum mismatch")
+                self._readback(checked, receipt)
+                self._checkpoint_stage = "cleanup_temporary_files"
+            self._checkpoint_stage = "write_local_receipt"
             receipt["remote_verified"] = True
             from .experiments import _write_json
             self.destination.mkdir(parents=True, exist_ok=True)
@@ -186,7 +231,9 @@ class KaggleDatasetBackup:
             return receipt
         except Exception as error:
             # Do not include API response bodies/headers/credentials in public output.
-            raise RuntimeError(f"Remote checkpoint was NOT verified ({type(error).__name__}). "
+            status = _http_status(error)
+            raise RuntimeError(f"Remote checkpoint was NOT verified (stage={self._checkpoint_stage}, "
+                               f"error={type(error).__name__}, HTTP={status if status is not None else 'none'}). "
                                f"Local snapshot is saved at {snapshot}; training stops before the next epoch") from None
 
     def download(self, destination):

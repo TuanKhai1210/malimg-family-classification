@@ -215,3 +215,70 @@ class KaggleBackupTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "header"):
             unpack_recovery(payload, destination, receipt=receipt)
         self.assertFalse(destination.exists())
+
+    def test_stale_receipt_retries_without_republishing_or_downloading_old_payload(self):
+        original = self.api.dataset_download_file
+        remaining = [2]
+        def stale(reference, name, **kwargs):
+            result = original(reference, name, **kwargs)
+            if name == "latest.json" and remaining[0]:
+                remaining[0] -= 1
+                path = Path(kwargs["path"]) / name
+                data = json.loads(path.read_text())
+                data["checkpoint_id"] = "previous-publication"
+                path.write_text(json.dumps(data))
+            return result
+        self.api.dataset_download_file = stale
+        receipt = KaggleDatasetBackup(self.root, self.destination, "fixture-owner/malimg-checkpoints",
+            api=self.api, sleep=lambda _: None, poll_timeout=4, poll_interval=1)("epoch_000001")
+        self.assertTrue(receipt["remote_verified"])
+        self.assertEqual(self.api.downloads, ["latest.json"] * 3 + [RECOVERY_FILE])
+        self.assertEqual(len(self.api.versions), 1)
+
+    def test_payload_404_then_ready_retries_same_publication(self):
+        original = self.api.dataset_download_file
+        remaining = [1]
+        def delayed(reference, name, **kwargs):
+            if name == RECOVERY_FILE and remaining[0]:
+                remaining[0] -= 1
+                raise MissingDataset()
+            return original(reference, name, **kwargs)
+        self.api.dataset_download_file = delayed
+        self.assertTrue(self.backup()("epoch_000001")["remote_verified"])
+        self.assertEqual(len(self.api.versions), 1)
+
+    def test_stale_payload_checksum_then_current_retries_without_accepting_bad_bytes(self):
+        original = self.api.dataset_download_file
+        remaining = [1]
+        def delayed(reference, name, **kwargs):
+            result = original(reference, name, **kwargs)
+            if name == RECOVERY_FILE and remaining[0]:
+                remaining[0] -= 1
+                with (Path(kwargs["path"]) / name).open("ab") as stream:
+                    stream.write(b"stale-bytes")
+            return result
+        self.api.dataset_download_file = delayed
+        receipt = self.backup()("epoch_000001")
+        self.assertTrue(receipt["remote_verified"])
+        self.assertEqual(len(self.api.versions), 1)
+
+    def test_auth_failure_is_not_retried_and_reports_safe_phase_and_status(self):
+        calls = []
+        class Denied(Exception):
+            status = 401
+        def denied(reference, name, **kwargs):
+            calls.append(name)
+            raise Denied("PRIVATE_API_TOKEN_MUST_NOT_APPEAR")
+        self.api.dataset_download_file = denied
+        with self.assertRaisesRegex(RuntimeError, "stage=download_receipt.*HTTP=401") as captured:
+            self.backup()("epoch_000001")
+        self.assertEqual(calls, ["latest.json"])
+        self.assertNotIn("PRIVATE_API_TOKEN", str(captured.exception))
+        self.assertFalse((self.destination / "remote_receipt.json").exists())
+
+    def test_local_receipt_write_failure_is_distinguished_from_download_failure(self):
+        self.destination.mkdir()
+        (self.destination / "remote_receipt.json").mkdir()
+        with self.assertRaisesRegex(RuntimeError, "stage=write_local_receipt"):
+            self.backup()("epoch_000001")
+        self.assertIn(RECOVERY_FILE, self.api.files)
