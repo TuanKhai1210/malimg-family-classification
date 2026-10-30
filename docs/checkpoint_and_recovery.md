@@ -1,5 +1,9 @@
 # Lưu và khôi phục thực nghiệm
 
+Chuyển sang Kaggle: dùng [notebook và hướng dẫn Kaggle](kaggle_training.md).
+Nhánh SGD mới có checkpoint theo epoch và readback Dataset private; hướng dẫn
+dưới đây giữ cho LR/LinearSVC và Drive theo trial.
+
 Notebook `.ipynb` giữ code/output đã lưu; các file trên `/content` thuộc máy
 Colab và có thể mất khi máy bị thu hồi. Lưu notebook không đồng nghĩa lưu
 features, model hoặc kết quả. Drive là nơi sao lưu cá nhân tùy chọn; pipeline

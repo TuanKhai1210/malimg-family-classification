@@ -10,7 +10,7 @@ Pretrained visual features · Traditional classifiers · Leakage-aware evaluatio
 [![PyTorch](https://img.shields.io/badge/PyTorch-frozen%20features-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](#method)
 [![Quality checks](https://github.com/TuanKhai1210/malimg-family-classification/actions/workflows/quality.yml/badge.svg?branch=main)](https://github.com/TuanKhai1210/malimg-family-classification/actions/workflows/quality.yml)
 
-[Overview](#overview) · [Getting started](#getting-started) · [Review and train](docs/review_and_train.md) · [Method](#method) · [Contributing](CONTRIBUTING.md)
+[Overview](#overview) · [Kaggle workspace](docs/kaggle_training.md) · [Getting started](#getting-started) · [Review and train](docs/review_and_train.md) · [Method](#method) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -30,6 +30,13 @@ This three-person Machine Learning course project studies **which malware family
 The [project plan](docs/project_plan.md) contains the task breakdown, owners A/B/C, schedule, deliverables, and acceptance criteria. The [data audit](docs/data_audit.md) explains the verified image counts and the decision to exclude `Yuner.A` from the main benchmark.
 
 ## Getting started
+
+For Kaggle, import [`main_kaggle.ipynb`](notebooks/main_kaggle.ipynb) and follow the
+[Kaggle training and recovery guide](docs/kaggle_training.md). It separates data,
+training, analysis and explicit final evaluation, adds epoch-resumable SGD on
+frozen features, and verifies backups to a private Kaggle Dataset after each epoch.
+LR/LinearSVC retain trial-level checkpoints. Credentials belong in Kaggle Secrets;
+local session files alone are not a durable backup.
 
 Clone the repository and use Python 3.11:
 
@@ -87,7 +94,7 @@ The core comparison uses the same locked split and evaluation unit. Validation s
 
 ## Project status
 
-> **Reviewable base — 13 October 2026.** Full-image preparation, candidate splitting and EDA have run locally. Frozen extractors, classical selection, evaluation, caching, result exports and packaging are implemented and tested with synthetic inputs. Full MalImg features/model results, instructor approval, group acceptance of the split and clean Colab `Runtime > Run all` verification remain pending. No benchmark scores are claimed here.
+> **Reviewable implementation — 30 October 2026.** Full-image preparation, candidate splitting and EDA have run locally. The team's saved classical baseline artifacts were reviewed privately on 26 October. Frozen extraction, classical selection, epoch-resumable SGD, private Kaggle backup/recovery and evaluation have local synthetic validation; no SGD MalImg benchmark or live Kaggle upload success is claimed here. Instructor approval, group acceptance of the split, final testing/report and clean platform acceptance remain pending.
 
 The [`notebooks/main_colab.ipynb`](notebooks/main_colab.ipynb) now installs dependencies, obtains data through the public source and calls the shared pipeline without mounting a personal drive. It saves and reloads `.npy` features. The final course submission also needs a real PDF report, group details and contribution evidence; [`final_report_template.md`](reports/final_report_template.md) is a drafting aid.
 
@@ -107,7 +114,7 @@ docs/          Project plan and dataset audit
 features/      Saved feature output; large files are ignored by Git
 metadata/      Versioned manifest, split, and label map once approved
 modules/       Data, splits, EDA, frozen features, selection, evaluation, packaging
-notebooks/     Colab front end
+notebooks/     Colab and Kaggle front ends
 reports/       Progress and final report artifacts
 results/       Generated experiments and figures; ignored by Git
 scripts/       Pipeline CLI, environment checks, packaging and audit utilities

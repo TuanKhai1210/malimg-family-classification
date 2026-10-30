@@ -77,7 +77,8 @@ def build_submission(root: str | Path, output: str | Path, *, draft: bool = True
             raise ValueError("Final package requires saved feature arrays")
 
     members = {}
-    for name in ("README.md", "CONTRIBUTING.md", "AGENTS.md", "requirements.txt", "requirements-dev.txt", ".python-version"):
+    for name in ("README.md", "CONTRIBUTING.md", "AGENTS.md", "requirements.txt", "requirements-dev.txt",
+                 "requirements-kaggle.txt", "MIGRATION.json", ".python-version"):
         path = root / name
         if path.is_file():
             members[name] = path
@@ -96,7 +97,8 @@ def build_submission(root: str | Path, output: str | Path, *, draft: bool = True
     config = json.loads(config_file.read_text(encoding="utf-8")) if config_file.is_file() else {}
     result_root = root / config.get("results_dir", "results")
     for path in result_root.rglob("*"):
-        if path.is_file() and path.suffix in {".json", ".csv", ".png", ".joblib"} and not path.is_symlink():
+        if (path.is_file() and path.suffix in {".json", ".csv", ".png", ".joblib"} and not path.is_symlink()
+                and not any(part.startswith(".staging-") for part in path.relative_to(result_root).parts)):
             members[path.relative_to(root).as_posix()] = path
     manifest = {name: _sha256(path) for name, path in sorted(members.items())}
     source_commit = None
