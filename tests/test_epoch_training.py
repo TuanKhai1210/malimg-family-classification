@@ -10,8 +10,10 @@ from unittest.mock import patch
 import joblib
 import numpy as np
 from sklearn.linear_model import SGDClassifier
+from sklearn.metrics import log_loss
 
-from modules.epoch_training import DEFAULT_SETTINGS, run_epoch_final_test, run_epoch_training
+from modules.epoch_training import (DEFAULT_SETTINGS, _StableSGDClassifier, _stable_log_probabilities,
+                                    run_epoch_final_test, run_epoch_training)
 from modules.feature_io import save_feature_set
 
 
@@ -175,3 +177,108 @@ class EpochTrainingTests(unittest.TestCase):
         for value in (True, "../escape", "not-present"):
             with self.subTest(value=value), self.assertRaises((ValueError, TypeError, FileNotFoundError)):
                 self.train(resume_run=value)
+
+    def test_extreme_negative_scores_complete_epochs_export_and_final(self):
+        original = SGDClassifier.partial_fit
+        def extreme(model, *args, **kwargs):
+            result = original(model, *args, **kwargs)
+            model.coef_.fill(0)
+            model.intercept_[:] = -10000.0 - np.arange(len(model.classes_))
+            return result
+        with patch.object(SGDClassifier, "partial_fit", new=extreme):
+            result = self.train()
+        self.assertEqual(result["status"], "completed")
+        state = self.state(result)
+        self.assertTrue(all(np.isfinite(row["train_loss_unweighted"]) for row in state["history"]))
+        proba = state["model"].predict_proba(self.arrays["val"][0])
+        self.assertTrue(np.isfinite(proba).all())
+        np.testing.assert_allclose(proba.sum(axis=1), 1)
+        self.assertTrue((Path(result["run_dir"]) / "validation/predictions.csv").is_file())
+        final = run_epoch_final_test(self.root, self.config, self.rows, "b" * 64,
+            {"resnet50": self.directory}, self.settings, run_id=result["run_id"], confirm_frozen=True)
+        self.assertEqual(final["status"], "completed")
+
+    def test_zero_epoch_run_with_changed_source_keeps_identity_guard(self):
+        def stop_before_fit(label, directory):
+            raise OSError("stop after registration")
+        with self.assertRaises(OSError):
+            self.train(checkpoint_callback=stop_before_fit)
+        directory = next((self.root / "results/epoch_runs").iterdir())
+        identity_path = directory / "identity.json"
+        identity = json.loads(identity_path.read_text())
+        identity["implementation"]["epoch_training.py"] = "previous-source"
+        identity_path.write_text(json.dumps(identity))
+        before = identity_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "identity mismatch"):
+            self.train(resume_run=directory.name)
+        self.assertEqual(identity_path.read_bytes(), before)
+        new = self.train(epochs_this_session=1)
+        self.assertNotEqual(new["run_id"], directory.name)
+
+    def test_nonfinite_scores_do_not_commit_a_completed_epoch(self):
+        original = SGDClassifier.partial_fit
+        def invalid(model, *args, **kwargs):
+            result = original(model, *args, **kwargs)
+            model.intercept_[:] = np.inf
+            return result
+        with patch.object(SGDClassifier, "partial_fit", new=invalid):
+            with self.assertRaises((FloatingPointError, ValueError)):
+                self.train()
+        directory = next((self.root / "results/epoch_runs").iterdir())
+        self.assertEqual(list((directory / "epochs").glob("epoch_*")), [])
+        self.assertFalse((directory / "selection.json").exists())
+
+
+class StableProbabilityTests(unittest.TestCase):
+    def model(self, scores, stable):
+        scores = np.asarray(scores, dtype=np.float64)
+        model = (_StableSGDClassifier if stable else SGDClassifier)(loss="log_loss")
+        model.classes_ = np.array([3, 7]) if scores.ndim == 1 else np.arange(scores.shape[1]) * 2 + 3
+        if scores.ndim == 1:
+            model.coef_ = np.array([[1.0]])
+            model.intercept_ = np.zeros(1)
+        else:
+            model.coef_ = np.eye(scores.shape[1])
+            model.intercept_ = np.zeros(scores.shape[1])
+        return model
+
+    def test_matches_sklearn_probabilities_and_labels_on_regular_scores(self):
+        for scores in (np.array([-20., -1., 0., 2., 20.]),
+                       np.array([[-3., 0., 2.], [4., -2., 1.]])):
+            x = scores[:, None] if scores.ndim == 1 else scores
+            base, stable = self.model(scores, False), self.model(scores, True)
+            np.testing.assert_allclose(stable.predict_proba(x), base.predict_proba(x), rtol=1e-12, atol=1e-15)
+            np.testing.assert_array_equal(stable.predict(x), base.predict(x))
+            np.testing.assert_allclose(np.exp(stable.predict_log_proba(x)), stable.predict_proba(x))
+
+    def test_all_zero_sigmoids_normalize_without_nan_or_uniform_replacement(self):
+        scores = np.array([[-10000., -10001., -10002.], [-1e300, -1e300, -1e300]])
+        with np.errstate(all="raise"):
+            # Ignore benign tiny exponential underflow; no invalid division is allowed.
+            with np.errstate(under="ignore"):
+                probabilities = np.exp(_stable_log_probabilities(scores))
+        expected = np.exp([0., -1., -2.]); expected /= expected.sum()
+        np.testing.assert_allclose(probabilities[0], expected)
+        np.testing.assert_allclose(probabilities[1], np.ones(3) / 3)
+        self.assertTrue(np.isfinite(log_loss([0, 1], probabilities, labels=[0, 1, 2])))
+
+    def test_nonfinite_scores_fail_and_hinge_does_not_advertise_probabilities(self):
+        for value in (np.nan, np.inf, -np.inf):
+            with self.assertRaisesRegex(FloatingPointError, "Non-finite"):
+                _stable_log_probabilities(np.array([[value, 0., 1.]]))
+        model = _StableSGDClassifier(loss="hinge")
+        self.assertFalse(hasattr(model, "predict_proba"))
+        self.assertFalse(hasattr(model, "predict_log_proba"))
+
+    def test_stable_subclass_has_identical_partial_fit_optimizer_updates(self):
+        rng = np.random.default_rng(12)
+        x = rng.normal(size=(15, 4))
+        y = np.arange(15) % 3
+        options = dict(loss="log_loss", shuffle=False, random_state=42, alpha=.0001)
+        base, stable = SGDClassifier(**options), _StableSGDClassifier(**options)
+        for start in (0, 5, 10):
+            for model in (base, stable):
+                model.partial_fit(x[start:start + 5], y[start:start + 5], classes=np.arange(3))
+        np.testing.assert_array_equal(base.coef_, stable.coef_)
+        np.testing.assert_array_equal(base.intercept_, stable.intercept_)
+        self.assertEqual(base.t_, stable.t_)

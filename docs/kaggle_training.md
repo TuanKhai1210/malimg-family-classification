@@ -50,10 +50,19 @@ results/epoch_runs/sgd_<timestamp>_<identity>/
 
 State có scaler/PCA fit trên train, SGD learning-rate counter, shuffle RNG,
 history, best epoch và patience. Class weights tính trên train một lần rồi giữ.
+Nhánh log_loss tính xác suất sigmoid one-vs-rest trong log space và chuẩn hóa
+sau khi trừ max theo hàng, tránh chia0/0 khi mọi sigmoid underflow. Optimizer,
+learning rate và nhãn predict không đổi; train/validation/final export dùng cùng
+cách tính ổn định. Decision scores NaN/Inf vẫn làm dừng, không được thay bằng0.
+train_loss_unweighted là log loss trên xác suất OvR đã chuẩn hóa (hoặc hinge
+loss), không gồm regularization/class weights của optimizer.
 Staging ghi/fsync state và publish thư mục epoch; staging chưa commit được bỏ
 qua khi resume và không vào backup. Corrupt committed checkpoint làm dừng thay
 vì âm thầm quay về bản cũ. Mất VM giữa minibatch phải replay epoch đang dở.
 Chỉ load own-group joblib: checksum kiểm bytes, không xác thực tác giả.
+Sửa source epoch_training.py sẽ đổi run identity. Run cũ chưa commit epoch nào
+vẫn giữ làm evidence; đặt RUN_ID=None để bắt đầu run mới với features đã lưu,
+không sửa identity.json để ép resume. Epoch đang dở chưa phải checkpoint hoàn tất.
 
 Sau mỗi epoch, tạo một version Dataset private có:
 

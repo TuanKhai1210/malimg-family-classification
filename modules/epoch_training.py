@@ -24,6 +24,7 @@ from sklearn.metrics import hinge_loss, log_loss
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.utils.metaestimators import available_if
 
 from . import experiments as ex
 from .config import validate_path_option
@@ -34,6 +35,35 @@ DEFAULT_SETTINGS = {
     "epochs": 30, "batch_size": 256, "patience": 6,
     "learning_rate": "optimal", "eta0": 0.01,
 }
+
+
+def _stable_log_probabilities(scores):
+    """Normalized OvR sigmoid probabilities in log space, not softmax scores."""
+    scores = np.asarray(scores, dtype=np.float64)
+    if not np.all(np.isfinite(scores)):
+        raise FloatingPointError("Non-finite SGD decision scores; inspect features and optimizer state before retrying")
+    if scores.ndim == 1:
+        values = np.column_stack((-np.logaddexp(0.0, scores), -np.logaddexp(0.0, -scores)))
+    elif scores.ndim == 2 and scores.shape[1] >= 2:
+        values = -np.logaddexp(0.0, -scores)
+    else:
+        raise ValueError("SGD scores must be binary or have one column per class")
+    # Center before reducing: expit(scores) may underflow to zero for EVERY
+    # class, while subtracting an uncentered logsum can lose precision.
+    centered = values - values.max(axis=1, keepdims=True)
+    return centered - np.log(np.exp(centered).sum(axis=1, keepdims=True))
+
+
+class _StableSGDClassifier(SGDClassifier):
+    """Keep SGD fitting/predictions unchanged; stabilize log-loss probabilities."""
+
+    @available_if(lambda self: self.loss == "log_loss")
+    def predict_proba(self, x):
+        return np.exp(_stable_log_probabilities(self.decision_function(x)))
+
+    @available_if(lambda self: self.loss == "log_loss")
+    def predict_log_proba(self, x):
+        return _stable_log_probabilities(self.decision_function(x))
 
 
 def validate_settings(settings: dict) -> dict:
@@ -164,7 +194,7 @@ def _initial_state(x, y, labels, identity, config, settings):
     if config.get("training", {}).get("class_weight") == "balanced":
         values = compute_class_weight("balanced", classes=np.asarray(labels), y=y)
         weights = {label: float(weight) for label, weight in zip(labels, values)}
-    steps.append(("sgdclassifier", SGDClassifier(
+    steps.append(("sgdclassifier", _StableSGDClassifier(
         loss=settings["loss"], alpha=settings["alpha"], learning_rate=settings["learning_rate"],
         eta0=settings["eta0"], class_weight=weights, shuffle=False,
         random_state=config["training"]["seed"], average=False,
