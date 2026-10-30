@@ -62,6 +62,86 @@ class ExperimentTests(unittest.TestCase):
         return self.run_validation(self.root, self.config, self.rows, self.manifest_sha,
                                    {"resnet50": self.feature_dir})
 
+    def test_interrupted_run_resumes_without_refitting_completed_trials(self):
+        from modules.classifiers import build_classifier
+        events = []
+
+        def interrupt_second(kind, *, c, **options):
+            if c == 1:
+                raise KeyboardInterrupt()
+            return build_classifier(kind, c=c, **options)
+
+        with patch("modules.experiments.build_classifier", side_effect=interrupt_second):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_validation(self.root, self.config, self.rows, self.manifest_sha,
+                                    {"resnet50": self.feature_dir},
+                                    checkpoint_callback=lambda event, directory: events.append(event))
+        run_dir = next((self.root / "results/runs").iterdir())
+        self.assertEqual(json.loads((run_dir / "E2/trial_01/trial.json").read_text())["status"], "interrupted")
+        completed = (run_dir / "E2/trial_00/trial.json").read_bytes()
+        self.assertIn("validation_interrupted", events)
+        with patch("modules.experiments.build_classifier", wraps=build_classifier) as build:
+            result = self.run_validation(self.root, self.config, self.rows, self.manifest_sha,
+                                         {"resnet50": self.feature_dir}, resume_run=run_dir.name)
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual(build.call_args.kwargs["c"], 1)
+        self.assertEqual((run_dir / "E2/trial_00/trial.json").read_bytes(), completed)
+        self.assertEqual(result["run_dir"], str(run_dir))
+        self.assertEqual(len(list((run_dir / "E2").glob("trial_01_attempt_*"))), 1)
+        # Reopening a fully completed validation also requires no fitting.
+        with patch("modules.experiments.build_classifier", side_effect=AssertionError("must reuse")):
+            self.run_validation(self.root, self.config, self.rows, self.manifest_sha,
+                                {"resnet50": self.feature_dir}, resume_run=run_dir.name)
+
+    def test_resume_rejects_changed_identity_and_corrupt_completed_model(self):
+        from modules.experiments import _implementation_signature
+        result = self.validate()
+        run_dir = Path(result["run_dir"])
+        changed = {**self.config, "training": {**self.config["training"], "seed": 43}}
+        with patch("modules.experiments.build_classifier") as build:
+            with self.assertRaisesRegex(ValueError, "Resume identity mismatch"):
+                self.run_validation(self.root, changed, self.rows, self.manifest_sha,
+                                    {"resnet50": self.feature_dir}, resume_run=run_dir.name)
+            signature = {**_implementation_signature(), "experiments.py": "changed"}
+            with patch("modules.experiments._implementation_signature", return_value=signature):
+                with self.assertRaisesRegex(ValueError, "Resume identity mismatch"):
+                    self.run_validation(self.root, self.config, self.rows, self.manifest_sha,
+                                        {"resnet50": self.feature_dir}, resume_run=run_dir.name)
+            build.assert_not_called()
+        with (run_dir / "E2/trial_00/model.joblib").open("ab") as stream:
+            stream.write(b"corruption")
+        with self.assertRaisesRegex(ValueError, "artifact changed"):
+            self.run_validation(self.root, self.config, self.rows, self.manifest_sha,
+                                {"resnet50": self.feature_dir}, resume_run=run_dir.name)
+
+    def test_resume_rejects_legacy_runs_and_concurrent_writers(self):
+        from modules.experiments import _run_lock
+        result = self.validate()
+        run_dir = Path(result["run_dir"])
+        with _run_lock(run_dir):
+            with self.assertRaisesRegex(ValueError, "already active"):
+                self.run_validation(self.root, self.config, self.rows, self.manifest_sha,
+                                    {"resnet50": self.feature_dir}, resume_run=run_dir.name)
+        (run_dir / "resume.json").unlink()
+        with self.assertRaisesRegex(ValueError, "legacy run"):
+            self.run_validation(self.root, self.config, self.rows, self.manifest_sha,
+                                {"resnet50": self.feature_dir}, resume_run=run_dir.name)
+
+    def test_backup_restore_resumes_in_a_new_root_without_fitting_or_loading_test(self):
+        from modules.checkpoints import save_backup, restore_backup
+        result = self.validate()
+        run_id = Path(result["run_dir"]).name
+        with tempfile.TemporaryDirectory() as storage:
+            snapshot = save_backup(self.root, Path(storage) / "backups")
+            restored = Path(storage) / "restored"
+            restore_backup(snapshot, restored)
+            with patch("modules.experiments.build_classifier", side_effect=AssertionError("must reuse")), \
+                 patch("modules.experiments.joblib.load", side_effect=AssertionError("no deserialization needed")):
+                resumed = self.run_validation(restored, self.config, self.rows, self.manifest_sha,
+                                               {"resnet50": restored / "features/resnet50"}, resume_run=run_id)
+            self.assertEqual(Path(resumed["run_dir"]).parent.parent, restored / "results")
+            self.assertEqual(resumed["experiments"][0]["validation_metrics"], result["experiments"][0]["validation_metrics"])
+
     def test_validation_never_opens_test_arrays_and_fits_scaler_only_on_train(self):
         import joblib
         from modules.feature_io import load_feature_set
